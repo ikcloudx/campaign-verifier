@@ -1,0 +1,22 @@
+{
+  "name": "campaign-verifier",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Independent, client-only verifier for publicly published campaign draws.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "drand-client": "1.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

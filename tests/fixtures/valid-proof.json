@@ -1,0 +1,93 @@
+{
+  "proofVersion": "1",
+  "proofHashAlgorithm": "sha256-stable-json-v1",
+  "proofHash": "f7741bd747dc136fb1065a5f26dce1b2f146c5b43dcf9edbc0f6e22634c97aa6",
+  "id": "campaign-2025-summer",
+  "slug": "summer-2025",
+  "name": "Summer raffle",
+  "status": "drawn",
+  "startAt": "2025-06-01T00:00:00.000Z",
+  "endAt": "2025-06-30T00:00:00.000Z",
+  "drawAt": "2025-07-01T00:00:00.000Z",
+  "winnerCount": 2,
+  "eligibilityRules": {
+    "excludeDeleted": true,
+    "paidAtWindow": "start_inclusive_end_exclusive",
+    "paidSegment": "positive_payment_fact_in_campaign_window",
+    "registrationWindow": "start_inclusive_end_exclusive",
+    "requireActive": true,
+    "requireVerifiedEmail": true,
+    "version": "campaign-eligibility-v3"
+  },
+  "drawAlgorithmVersion": "campaign-drand-v1",
+  "snapshot": {
+    "hash": "1750d274ef6faa7cdc0ae069f996ac02d154322025e38e197e6ddffdfbb073ae",
+    "rulesHash": "75d8b35c3268c978bdf75ad781fc7061b1a3e6d2d5b97863722f3bbc149efe4e",
+    "publishedAt": "2025-07-01T00:00:02.000Z",
+    "entryCount": 3,
+    "eligibleCount": 3,
+    "freeCount": 2,
+    "paidCount": 1,
+    "manifest": "ticket-a\nticket-b\nticket-c\n",
+    "ticketIds": ["ticket-c", "ticket-a", "ticket-b"]
+  },
+  "snapshotCommitment": {
+    "commitmentVersion": "campaign-snapshot-v1",
+    "campaignId": "campaign-2025-summer",
+    "snapshotHash": "1750d274ef6faa7cdc0ae069f996ac02d154322025e38e197e6ddffdfbb073ae",
+    "rulesHash": "75d8b35c3268c978bdf75ad781fc7061b1a3e6d2d5b97863722f3bbc149efe4e",
+    "entryCount": 3,
+    "eligibleCount": 3,
+    "freeCount": 2,
+    "paidCount": 1,
+    "publishedAt": "2025-07-01T00:00:02.000Z",
+    "commitmentHash": "476a4adee7a326c1ea0e28ab730134a4a87f5c36f9a1155b3783f2555c353f64"
+  },
+  "drand": {
+    "beaconId": "quicknet",
+    "chainHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "targetRound": 12345,
+    "targetRoundTime": 1751328060,
+    "verifiedAt": "2025-07-01T00:00:03.000Z",
+    "publicKey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "randomness": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "signature": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "previousSignature": null,
+    "beaconPayload": {
+      "round": 12345,
+      "randomness": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "signature": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "draw": {
+    "beaconId": "quicknet",
+    "chainHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "round": 12345,
+    "roundTime": 1751328060,
+    "randomness": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "signature": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "previousSignature": null,
+    "snapshotHash": "1750d274ef6faa7cdc0ae069f996ac02d154322025e38e197e6ddffdfbb073ae",
+    "rulesHash": "75d8b35c3268c978bdf75ad781fc7061b1a3e6d2d5b97863722f3bbc149efe4e",
+    "drawSeed": "3e586ceb2335d99f1d9c059a2255f5b2166df538b01377bf05e8d3f0344938c8",
+    "algorithmVersion": "campaign-drand-v1",
+    "beaconPayload": {
+      "round": 12345,
+      "randomness": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "signature": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "winners": [
+      {
+        "ticketId": "ticket-b",
+        "score": "0205ba5d88ee5e3fe800757211a5515489940f87ff465ea413d2ab3995691aea",
+        "rank": 1
+      },
+      {
+        "ticketId": "ticket-c",
+        "score": "3bb8ce71f9bfb31d13504550a20215270575af8dcc76325795e2b6c1b7c178c5",
+        "rank": 2
+      }
+    ],
+    "completedAt": "2025-07-01T00:00:04.000Z"
+  }
+}
