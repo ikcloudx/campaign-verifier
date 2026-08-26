@@ -148,8 +148,8 @@ export async function verifyProofIntegrity(
   ));
 
   const isSegmented = proof.drawAlgorithmVersion === SEGMENTED_DRAW_ALGORITHM_VERSION;
-  const manifest = isSegmented && proof.snapshot.segmentedEntries
-    ? await createSegmentedSnapshotManifest(proof.snapshot.segmentedEntries)
+  const manifest = isSegmented && proof.snapshot.entries
+    ? await createSegmentedSnapshotManifest(proof.snapshot.entries)
     : await createSnapshotManifest(proof.snapshot.ticketIds);
   const manifestMatches = proof.snapshot.manifest === undefined || proof.snapshot.manifest === manifest.manifest;
   const snapshotHashMatches = same(manifest.hash, proof.snapshot.hash);
@@ -275,9 +275,9 @@ export async function verifyProofIntegrity(
   ));
 
   let expectedWinners: Array<{ ticketId: string; score: string; rank: number }>;
-  if (isSegmented && proof.snapshot.segmentedEntries && proof.freeWinnerCount != null && proof.paidWinnerCount != null) {
+  if (isSegmented && proof.snapshot.entries && proof.freeWinnerCount != null && proof.paidWinnerCount != null) {
     expectedWinners = await selectSegmentedWinners(
-      proof.snapshot.segmentedEntries,
+      proof.snapshot.entries,
       { freeWinnerCount: proof.freeWinnerCount, paidWinnerCount: proof.paidWinnerCount },
       seed,
     );

@@ -228,7 +228,7 @@ test('verifies a segmented proof (campaign-drand-segmented-v1 & campaign-snapsho
       paidCount: 1,
       manifest,
       ticketIds,
-      segmentedEntries: normalizedEntries,
+      entries: normalizedEntries,
     },
     snapshotCommitment,
     drand: {

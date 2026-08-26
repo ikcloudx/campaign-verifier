@@ -13,7 +13,7 @@ export interface CampaignSnapshot {
   paidCount: number;
   manifest?: string;
   ticketIds: string[];
-  segmentedEntries?: SegmentedSnapshotEntry[];
+  entries?: SegmentedSnapshotEntry[];
 }
 
 export interface SnapshotCommitment {

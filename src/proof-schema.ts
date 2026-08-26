@@ -125,7 +125,7 @@ function parseSnapshot(value: unknown): CampaignSnapshot {
   const input = record(value, 'snapshot');
   assertKnownKeys(input, [
     'hash', 'rulesHash', 'publishedAt', 'entryCount', 'eligibleCount', 'freeCount', 'paidCount',
-    'manifest', 'ticketIds', 'segmentedEntries',
+    'manifest', 'ticketIds', 'entries',
   ], 'snapshot');
   const ticketIds = input.ticketIds;
   if (!Array.isArray(ticketIds) || ticketIds.some((ticketId) => typeof ticketId !== 'string' || !ticketId)) {
@@ -139,15 +139,15 @@ function parseSnapshot(value: unknown): CampaignSnapshot {
   const eligibleCount = input.eligibleCount === undefined
     ? freeCount + paidCount
     : nonNegativeInteger(input.eligibleCount, 'snapshot.eligibleCount');
-  let segmentedEntries: SegmentedSnapshotEntry[] | undefined;
-  if (input.segmentedEntries !== undefined) {
-    if (!Array.isArray(input.segmentedEntries)) fail('snapshot.segmentedEntries must be an array');
-    segmentedEntries = input.segmentedEntries.map((entry, idx) => {
-      const rec = record(entry, `snapshot.segmentedEntries[${idx}]`);
-      assertKnownKeys(rec, ['ticketId', 'segment'], `snapshot.segmentedEntries[${idx}]`);
-      const tId = stringValue(rec.ticketId, `snapshot.segmentedEntries[${idx}].ticketId`);
-      const seg = stringValue(rec.segment, `snapshot.segmentedEntries[${idx}].segment`);
-      if (seg !== 'free' && seg !== 'paid') fail(`snapshot.segmentedEntries[${idx}].segment must be free or paid`);
+  let entries: SegmentedSnapshotEntry[] | undefined;
+  if (input.entries !== undefined) {
+    if (!Array.isArray(input.entries)) fail('snapshot.entries must be an array');
+    entries = input.entries.map((entry, idx) => {
+      const rec = record(entry, `snapshot.entries[${idx}]`);
+      assertKnownKeys(rec, ['ticketId', 'segment'], `snapshot.entries[${idx}]`);
+      const tId = stringValue(rec.ticketId, `snapshot.entries[${idx}].ticketId`);
+      const seg = stringValue(rec.segment, `snapshot.entries[${idx}].segment`);
+      if (seg !== 'free' && seg !== 'paid') fail(`snapshot.entries[${idx}].segment must be free or paid`);
       return { ticketId: tId, segment: seg as 'free' | 'paid' };
     });
   }
@@ -161,7 +161,7 @@ function parseSnapshot(value: unknown): CampaignSnapshot {
     paidCount,
     manifest: input.manifest === undefined ? undefined : stringValue(input.manifest, 'snapshot.manifest'),
     ticketIds: ticketIds as string[],
-    segmentedEntries,
+    entries,
   };
 }
 
