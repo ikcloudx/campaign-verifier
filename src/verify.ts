@@ -1,10 +1,13 @@
 import {
   createDrawSeed,
+  createSegmentedSnapshotManifest,
   createSnapshotCommitment,
   createSnapshotManifest,
   hashRules,
   hashPublicProof,
+  selectSegmentedWinners,
   selectWinners,
+  SEGMENTED_DRAW_ALGORITHM_VERSION,
 } from './crypto.ts';
 import { assertNoSensitiveData } from './proof-schema.ts';
 import type { CampaignProof, SnapshotCommitment } from './types.ts';
@@ -62,6 +65,10 @@ function commitmentFieldsMatch(left: SnapshotCommitment, right: SnapshotCommitme
     && left.eligibleCount === right.eligibleCount
     && left.freeCount === right.freeCount
     && left.paidCount === right.paidCount
+    && (left.drawAlgorithmVersion === undefined || left.drawAlgorithmVersion === right.drawAlgorithmVersion)
+    && (left.winnerCount === undefined || left.winnerCount === right.winnerCount)
+    && (left.freeWinnerCount === undefined || left.freeWinnerCount === right.freeWinnerCount)
+    && (left.paidWinnerCount === undefined || left.paidWinnerCount === right.paidWinnerCount)
     && left.publishedAt === right.publishedAt
     && same(left.commitmentHash, right.commitmentHash);
 }
@@ -140,7 +147,10 @@ export async function verifyProofIntegrity(
       : `快照计数不一致：${countProblems.join('；')}`,
   ));
 
-  const manifest = await createSnapshotManifest(proof.snapshot.ticketIds);
+  const isSegmented = proof.drawAlgorithmVersion === SEGMENTED_DRAW_ALGORITHM_VERSION;
+  const manifest = isSegmented && proof.snapshot.segmentedEntries
+    ? await createSegmentedSnapshotManifest(proof.snapshot.segmentedEntries)
+    : await createSnapshotManifest(proof.snapshot.ticketIds);
   const manifestMatches = proof.snapshot.manifest === undefined || proof.snapshot.manifest === manifest.manifest;
   const snapshotHashMatches = same(manifest.hash, proof.snapshot.hash);
   const drawSnapshotHashMatches = same(proof.snapshot.hash, proof.draw.snapshotHash);
@@ -164,8 +174,12 @@ export async function verifyProofIntegrity(
       freeCount: proof.snapshot.freeCount,
       paidCount: proof.snapshot.paidCount,
       publishedAt: proof.snapshot.publishedAt,
+      drawAlgorithmVersion: proof.drawAlgorithmVersion,
+      winnerCount: proof.winnerCount,
+      freeWinnerCount: proof.freeWinnerCount,
+      paidWinnerCount: proof.paidWinnerCount,
     });
-    const internalCommitmentMatches = commitmentFieldsMatch(proof.snapshotCommitment, expectedCommitment);
+    const internalCommitmentMatches = commitmentFieldsMatch(proof.snapshotCommitment, expectedCommitment as unknown as SnapshotCommitment);
     checks.push(check(
       'snapshot-commitment',
       '快照预承诺',
@@ -248,6 +262,9 @@ export async function verifyProofIntegrity(
     campaignId: proof.id,
     snapshotHash: proof.draw.snapshotHash,
     rulesHash: proof.draw.rulesHash,
+    algorithmVersion: proof.drawAlgorithmVersion,
+    freeWinnerCount: proof.freeWinnerCount,
+    paidWinnerCount: proof.paidWinnerCount,
   });
   const seedMatches = same(seed, proof.draw.drawSeed);
   checks.push(check(
@@ -257,7 +274,16 @@ export async function verifyProofIntegrity(
     seedMatches ? `根据 campaignId、drand 和快照重算得到 ${seed}。` : '重算的抽奖种子与公开 drawSeed 不一致。',
   ));
 
-  const expectedWinners = await selectWinners(proof.snapshot.ticketIds, proof.winnerCount, seed);
+  let expectedWinners: Array<{ ticketId: string; score: string; rank: number }>;
+  if (isSegmented && proof.snapshot.segmentedEntries && proof.freeWinnerCount != null && proof.paidWinnerCount != null) {
+    expectedWinners = await selectSegmentedWinners(
+      proof.snapshot.segmentedEntries,
+      { freeWinnerCount: proof.freeWinnerCount, paidWinnerCount: proof.paidWinnerCount },
+      seed,
+    );
+  } else {
+    expectedWinners = await selectWinners(proof.snapshot.ticketIds, proof.winnerCount, seed);
+  }
   const winnersMatch = expectedWinners.length === proof.draw.winners.length
     && expectedWinners.every((expected, index) => {
       const actual = proof.draw.winners[index];

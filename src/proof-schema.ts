@@ -4,10 +4,14 @@ import type {
   CampaignProof,
   CampaignSnapshot,
   CampaignWinner,
+  SegmentedSnapshotEntry,
   SnapshotCommitment,
 } from './types.ts';
 import {
+  DRAW_ALGORITHM_VERSION,
   PROOF_HASH_ALGORITHM,
+  SEGMENTED_DRAW_ALGORITHM_VERSION,
+  SEGMENTED_SNAPSHOT_COMMITMENT_VERSION,
   SNAPSHOT_COMMITMENT_VERSION,
 } from './crypto.ts';
 
@@ -121,7 +125,7 @@ function parseSnapshot(value: unknown): CampaignSnapshot {
   const input = record(value, 'snapshot');
   assertKnownKeys(input, [
     'hash', 'rulesHash', 'publishedAt', 'entryCount', 'eligibleCount', 'freeCount', 'paidCount',
-    'manifest', 'ticketIds',
+    'manifest', 'ticketIds', 'segmentedEntries',
   ], 'snapshot');
   const ticketIds = input.ticketIds;
   if (!Array.isArray(ticketIds) || ticketIds.some((ticketId) => typeof ticketId !== 'string' || !ticketId)) {
@@ -135,6 +139,18 @@ function parseSnapshot(value: unknown): CampaignSnapshot {
   const eligibleCount = input.eligibleCount === undefined
     ? freeCount + paidCount
     : nonNegativeInteger(input.eligibleCount, 'snapshot.eligibleCount');
+  let segmentedEntries: SegmentedSnapshotEntry[] | undefined;
+  if (input.segmentedEntries !== undefined) {
+    if (!Array.isArray(input.segmentedEntries)) fail('snapshot.segmentedEntries must be an array');
+    segmentedEntries = input.segmentedEntries.map((entry, idx) => {
+      const rec = record(entry, `snapshot.segmentedEntries[${idx}]`);
+      assertKnownKeys(rec, ['ticketId', 'segment'], `snapshot.segmentedEntries[${idx}]`);
+      const tId = stringValue(rec.ticketId, `snapshot.segmentedEntries[${idx}].ticketId`);
+      const seg = stringValue(rec.segment, `snapshot.segmentedEntries[${idx}].segment`);
+      if (seg !== 'free' && seg !== 'paid') fail(`snapshot.segmentedEntries[${idx}].segment must be free or paid`);
+      return { ticketId: tId, segment: seg as 'free' | 'paid' };
+    });
+  }
   return {
     hash: hashValue(input.hash, 'snapshot.hash'),
     rulesHash: hashValue(input.rulesHash, 'snapshot.rulesHash'),
@@ -145,6 +161,7 @@ function parseSnapshot(value: unknown): CampaignSnapshot {
     paidCount,
     manifest: input.manifest === undefined ? undefined : stringValue(input.manifest, 'snapshot.manifest'),
     ticketIds: ticketIds as string[],
+    segmentedEntries,
   };
 }
 
@@ -221,9 +238,10 @@ export function parseSnapshotCommitment(value: unknown, path = 'snapshotCommitme
   assertKnownKeys(input, [
     'commitmentVersion', 'campaignId', 'snapshotHash', 'rulesHash', 'entryCount', 'eligibleCount',
     'freeCount', 'paidCount', 'publishedAt', 'commitmentHash',
+    'drawAlgorithmVersion', 'winnerCount', 'freeWinnerCount', 'paidWinnerCount',
   ], path);
   const commitmentVersion = stringValue(input.commitmentVersion, `${path}.commitmentVersion`);
-  if (commitmentVersion !== SNAPSHOT_COMMITMENT_VERSION) {
+  if (commitmentVersion !== SNAPSHOT_COMMITMENT_VERSION && commitmentVersion !== SEGMENTED_SNAPSHOT_COMMITMENT_VERSION) {
     fail(`unsupported snapshot commitment version: ${commitmentVersion}`);
   }
   return {
@@ -237,6 +255,14 @@ export function parseSnapshotCommitment(value: unknown, path = 'snapshotCommitme
     paidCount: nonNegativeInteger(input.paidCount, `${path}.paidCount`),
     publishedAt: stringValue(input.publishedAt, `${path}.publishedAt`),
     commitmentHash: hashValue(input.commitmentHash, `${path}.commitmentHash`),
+    drawAlgorithmVersion: input.drawAlgorithmVersion === undefined ? undefined : stringValue(input.drawAlgorithmVersion, `${path}.drawAlgorithmVersion`),
+    winnerCount: input.winnerCount === undefined ? undefined : positiveInteger(input.winnerCount, `${path}.winnerCount`),
+    freeWinnerCount: input.freeWinnerCount === undefined || input.freeWinnerCount === null
+      ? (input.freeWinnerCount as null | undefined)
+      : nonNegativeInteger(input.freeWinnerCount, `${path}.freeWinnerCount`),
+    paidWinnerCount: input.paidWinnerCount === undefined || input.paidWinnerCount === null
+      ? (input.paidWinnerCount as null | undefined)
+      : nonNegativeInteger(input.paidWinnerCount, `${path}.paidWinnerCount`),
   };
 }
 
@@ -246,12 +272,18 @@ export function parseProof(input: unknown): CampaignProof {
   const root = record(input, 'proof');
   assertKnownKeys(root, [
     'proofVersion', 'proofHashAlgorithm', 'proofHash', 'id', 'slug', 'name', 'status', 'startAt',
-    'endAt', 'drawAt', 'winnerCount', 'eligibilityRules', 'drawAlgorithmVersion', 'snapshot',
-    'snapshotCommitment', 'drand', 'draw',
+    'endAt', 'drawAt', 'winnerCount', 'freeWinnerCount', 'paidWinnerCount', 'eligibilityRules',
+    'drawAlgorithmVersion', 'snapshot', 'snapshotCommitment', 'drand', 'draw',
   ], 'proof');
   const rules = record(root.eligibilityRules, 'eligibilityRules');
   const winnerCount = positiveInteger(root.winnerCount, 'winnerCount');
   if (winnerCount > 1000) fail('winnerCount cannot exceed 1000');
+  const freeWinnerCount = root.freeWinnerCount === undefined || root.freeWinnerCount === null
+    ? (root.freeWinnerCount as null | undefined)
+    : nonNegativeInteger(root.freeWinnerCount, 'freeWinnerCount');
+  const paidWinnerCount = root.paidWinnerCount === undefined || root.paidWinnerCount === null
+    ? (root.paidWinnerCount as null | undefined)
+    : nonNegativeInteger(root.paidWinnerCount, 'paidWinnerCount');
   const proofHash = root.proofHash === undefined ? undefined : hashValue(root.proofHash, 'proofHash');
   const proofHashAlgorithm = root.proofHashAlgorithm === undefined
     ? undefined
@@ -276,6 +308,8 @@ export function parseProof(input: unknown): CampaignProof {
     endAt: optionalString(root.endAt, 'endAt'),
     drawAt: optionalString(root.drawAt, 'drawAt'),
     winnerCount,
+    freeWinnerCount,
+    paidWinnerCount,
     eligibilityRules: rules,
     drawAlgorithmVersion: stringValue(root.drawAlgorithmVersion, 'drawAlgorithmVersion'),
     snapshot,
@@ -283,8 +317,12 @@ export function parseProof(input: unknown): CampaignProof {
     drand: parseDrand(root.drand),
     draw: parseDraw(root.draw),
   };
-  if (proof.drawAlgorithmVersion !== 'campaign-drand-v1' || proof.draw.algorithmVersion !== 'campaign-drand-v1') {
+  const validAlgorithms = [DRAW_ALGORITHM_VERSION, SEGMENTED_DRAW_ALGORITHM_VERSION];
+  if (!validAlgorithms.includes(proof.drawAlgorithmVersion) || !validAlgorithms.includes(proof.draw.algorithmVersion)) {
     fail('unsupported draw algorithm version');
+  }
+  if (proof.drawAlgorithmVersion !== proof.draw.algorithmVersion) {
+    fail('drawAlgorithmVersion mismatch between proof root and draw object');
   }
   if (proof.proofVersion && proof.proofVersion !== SUPPORTED_PROOF_VERSION) {
     fail(`unsupported proof version: ${proof.proofVersion}`);

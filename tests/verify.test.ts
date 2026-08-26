@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { createSnapshotManifest, hashRules } from '../src/crypto.ts';
+import {
+  createDrawSeed,
+  createSegmentedSnapshotManifest,
+  createSnapshotCommitment,
+  createSnapshotManifest,
+  hashPublicProof,
+  hashRules,
+  selectSegmentedWinners,
+} from '../src/crypto.ts';
 import {
   MAX_TICKET_COUNT,
   parseProof,
@@ -147,4 +155,125 @@ test('reports an entryCount mismatch explicitly', async () => {
 
   assert.equal(countCheck?.ok, false);
   assert.match(countCheck?.detail || '', /entryCount/);
+});
+
+test('verifies a segmented proof (campaign-drand-segmented-v1 & campaign-snapshot-v2)', async () => {
+  const rules = { requireActive: true };
+  const rulesHash = await hashRules(rules);
+  const entries = [
+    { ticketId: 'ticket-free-1', segment: 'free' },
+    { ticketId: 'ticket-free-2', segment: 'free' },
+    { ticketId: 'ticket-paid-1', segment: 'paid' },
+  ];
+  const { entries: normalizedEntries, ticketIds, manifest, hash: snapshotHash } = await createSegmentedSnapshotManifest(entries);
+  const campaignId = 'segmented-camp-1';
+  const publishedAt = '2025-06-01T00:00:00.000Z';
+  const freeWinnerCount = 1;
+  const paidWinnerCount = 1;
+  const winnerCount = freeWinnerCount + paidWinnerCount;
+  const drawAlgorithmVersion = 'campaign-drand-segmented-v1';
+
+  const snapshotCommitment = await createSnapshotCommitment({
+    campaignId,
+    snapshotHash,
+    rulesHash,
+    entryCount: 3,
+    eligibleCount: 3,
+    freeCount: 2,
+    paidCount: 1,
+    publishedAt,
+    drawAlgorithmVersion,
+    winnerCount,
+    freeWinnerCount,
+    paidWinnerCount,
+  });
+
+  const chainHash = '8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce';
+  const round = 1000;
+  const randomness = '2b87e0b507d3910c57173b22cf3ffed7f62d19f6a73c155551c6c043e0e7a4e6';
+
+  const drawSeed = await createDrawSeed({
+    chainHash,
+    round,
+    randomness,
+    campaignId,
+    snapshotHash,
+    rulesHash,
+    algorithmVersion: drawAlgorithmVersion,
+    freeWinnerCount,
+    paidWinnerCount,
+  });
+
+  const winners = await selectSegmentedWinners(entries, { freeWinnerCount, paidWinnerCount }, drawSeed);
+
+  const proofData: Record<string, unknown> = {
+    proofVersion: '1',
+    proofHashAlgorithm: 'sha256-stable-json-v1',
+    id: campaignId,
+    slug: 'segmented-campaign',
+    name: 'Segmented Campaign',
+    status: 'drawn',
+    winnerCount,
+    freeWinnerCount,
+    paidWinnerCount,
+    eligibilityRules: rules,
+    drawAlgorithmVersion,
+    snapshot: {
+      hash: snapshotHash,
+      rulesHash,
+      publishedAt,
+      entryCount: 3,
+      eligibleCount: 3,
+      freeCount: 2,
+      paidCount: 1,
+      manifest,
+      ticketIds,
+      segmentedEntries: normalizedEntries,
+    },
+    snapshotCommitment,
+    drand: {
+      beaconId: 'quicknet',
+      chainHash,
+      targetRound: round,
+      targetRoundTime: '2025-06-01T00:00:30.000Z',
+      publicKey: '83cf0ced5d5e6ee38d4f278e6b352845cb4e43d08828694f0ad9e38377e6a13cd5c3ed6e2197802b71364377800b7a69',
+      randomness,
+      signature: 'a7b8c9d0e1f2030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c',
+      beaconPayload: {
+        round,
+        randomness,
+        signature: 'a7b8c9d0e1f2030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c',
+      },
+    },
+    draw: {
+      beaconId: 'quicknet',
+      chainHash,
+      round,
+      roundTime: '2025-06-01T00:00:30.000Z',
+      randomness,
+      signature: 'a7b8c9d0e1f2030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c',
+      snapshotHash,
+      rulesHash,
+      drawSeed,
+      algorithmVersion: drawAlgorithmVersion,
+      winners,
+      completedAt: '2025-06-01T00:01:00.000Z',
+      beaconPayload: {
+        round,
+        randomness,
+        signature: 'a7b8c9d0e1f2030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c',
+      },
+    },
+  };
+  proofData.proofHash = await hashPublicProof(proofData);
+
+  const parsed = parseProof(proofData);
+  const result = await verifyProofIntegrity(parsed);
+
+  assert.equal(result.ok, true);
+  assert.equal(parsed.drawAlgorithmVersion, 'campaign-drand-segmented-v1');
+  assert.equal(parsed.freeWinnerCount, 1);
+  assert.equal(parsed.paidWinnerCount, 1);
+  assert.equal(parsed.snapshotCommitment?.commitmentVersion, 'campaign-snapshot-v2');
+  assert.ok(result.checks.every((c) => c.ok));
 });

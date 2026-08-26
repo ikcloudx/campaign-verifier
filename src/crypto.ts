@@ -1,6 +1,8 @@
 export const DRAW_ALGORITHM_VERSION = 'campaign-drand-v1';
+export const SEGMENTED_DRAW_ALGORITHM_VERSION = 'campaign-drand-segmented-v1';
 export const PROOF_HASH_ALGORITHM = 'sha256-stable-json-v1';
 export const SNAPSHOT_COMMITMENT_VERSION = 'campaign-snapshot-v1';
+export const SEGMENTED_SNAPSHOT_COMMITMENT_VERSION = 'campaign-snapshot-v2';
 const SCORE_BATCH_SIZE = 1024;
 
 const encoder = new TextEncoder();
@@ -45,14 +47,21 @@ export interface SnapshotCommitmentInput {
   freeCount: number;
   paidCount: number;
   publishedAt: string;
+  drawAlgorithmVersion?: string;
+  winnerCount?: number;
+  freeWinnerCount?: number | null;
+  paidWinnerCount?: number | null;
 }
 
-export async function createSnapshotCommitment(input: SnapshotCommitmentInput): Promise<SnapshotCommitmentInput & {
+export async function createSnapshotCommitment(input: SnapshotCommitmentInput): Promise<Record<string, unknown> & {
   commitmentVersion: string;
   commitmentHash: string;
 }> {
+  const segmented = input.freeWinnerCount != null && input.paidWinnerCount != null;
   const payload = {
-    commitmentVersion: SNAPSHOT_COMMITMENT_VERSION,
+    commitmentVersion: segmented
+      ? SEGMENTED_SNAPSHOT_COMMITMENT_VERSION
+      : SNAPSHOT_COMMITMENT_VERSION,
     campaignId: String(input.campaignId),
     snapshotHash: String(input.snapshotHash).toLowerCase(),
     rulesHash: String(input.rulesHash).toLowerCase(),
@@ -60,6 +69,14 @@ export async function createSnapshotCommitment(input: SnapshotCommitmentInput): 
     eligibleCount: Number(input.eligibleCount),
     freeCount: Number(input.freeCount),
     paidCount: Number(input.paidCount),
+    ...(!segmented
+      ? {}
+      : {
+          drawAlgorithmVersion: String(input.drawAlgorithmVersion),
+          winnerCount: Number(input.winnerCount),
+          freeWinnerCount: Number(input.freeWinnerCount),
+          paidWinnerCount: Number(input.paidWinnerCount),
+        }),
     publishedAt: new Date(input.publishedAt).toISOString(),
   };
   return {
@@ -78,6 +95,41 @@ export async function createSnapshotManifest(ticketIds: string[]): Promise<{
   return { ticketIds: sorted, manifest, hash: await sha256Hex(manifest) };
 }
 
+export async function createSegmentedSnapshotManifest(
+  entries: Array<{ ticketId: string; segment: string }>,
+): Promise<{
+  entries: Array<{ ticketId: string; segment: string }>;
+  ticketIds: string[];
+  manifest: string;
+  hash: string;
+}> {
+  const byTicketId = new Map<string, string>();
+  for (const entry of entries) {
+    const ticketId = String(entry?.ticketId ?? '');
+    const segment = String(entry?.segment ?? '');
+    if (!ticketId || (segment !== 'free' && segment !== 'paid')) {
+      throw new Error('segmented snapshot entries require a ticketId and free or paid segment');
+    }
+    const existing = byTicketId.get(ticketId);
+    if (existing && existing !== segment) {
+      throw new Error('segmented snapshot ticket IDs must have exactly one segment');
+    }
+    byTicketId.set(ticketId, segment);
+  }
+  const normalizedEntries = [...byTicketId]
+    .map(([ticketId, segment]) => ({ ticketId, segment }))
+    .sort((left, right) => (left.ticketId < right.ticketId ? -1 : left.ticketId > right.ticketId ? 1 : 0));
+  const manifest = normalizedEntries
+    .map((entry) => `${entry.segment}\t${entry.ticketId}\n`)
+    .join('');
+  return {
+    entries: normalizedEntries,
+    ticketIds: normalizedEntries.map((entry) => entry.ticketId),
+    manifest,
+    hash: await sha256Hex(manifest),
+  };
+}
+
 export async function createDrawSeed(input: {
   chainHash: string;
   round: number;
@@ -85,15 +137,22 @@ export async function createDrawSeed(input: {
   campaignId: string;
   snapshotHash: string;
   rulesHash: string;
+  algorithmVersion?: string;
+  freeWinnerCount?: number | null;
+  paidWinnerCount?: number | null;
 }): Promise<string> {
+  const algorithmVersion = input.algorithmVersion || DRAW_ALGORITHM_VERSION;
   const payload = [
-    DRAW_ALGORITHM_VERSION,
+    algorithmVersion,
     String(input.chainHash).toLowerCase(),
     String(input.round),
     String(input.randomness).toLowerCase(),
     String(input.campaignId),
     String(input.snapshotHash).toLowerCase(),
     String(input.rulesHash).toLowerCase(),
+    ...(algorithmVersion === SEGMENTED_DRAW_ALGORITHM_VERSION
+      ? [String(input.freeWinnerCount), String(input.paidWinnerCount)]
+      : []),
   ].join('\0');
   return sha256Hex(payload);
 }
@@ -123,5 +182,29 @@ export async function selectWinners(
       left.score.localeCompare(right.score, 'en') || left.ticketId.localeCompare(right.ticketId, 'en')
     ))
     .slice(0, winnerCount)
+    .map((winner, index) => ({ ...winner, rank: index + 1 }));
+}
+
+export async function selectSegmentedWinners(
+  entries: Array<{ ticketId: string; segment: string }>,
+  quotas: { freeWinnerCount: number; paidWinnerCount: number },
+  drawSeed: string,
+): Promise<Array<{ ticketId: string; score: string; rank: number }>> {
+  const { entries: normalized } = await createSegmentedSnapshotManifest(entries);
+  const freeWinners = await selectWinners(
+    normalized.filter((entry) => entry.segment === 'free').map((entry) => entry.ticketId),
+    quotas.freeWinnerCount,
+    drawSeed,
+  );
+  const paidWinners = await selectWinners(
+    normalized.filter((entry) => entry.segment === 'paid').map((entry) => entry.ticketId),
+    quotas.paidWinnerCount,
+    drawSeed,
+  );
+  const selected = [...freeWinners, ...paidWinners];
+  return selected
+    .sort((left, right) => (
+      left.score.localeCompare(right.score, 'en') || left.ticketId.localeCompare(right.ticketId, 'en')
+    ))
     .map((winner, index) => ({ ...winner, rank: index + 1 }));
 }

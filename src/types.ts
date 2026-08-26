@@ -1,3 +1,8 @@
+export interface SegmentedSnapshotEntry {
+  ticketId: string;
+  segment: 'free' | 'paid';
+}
+
 export interface CampaignSnapshot {
   hash: string;
   rulesHash: string;
@@ -8,6 +13,7 @@ export interface CampaignSnapshot {
   paidCount: number;
   manifest?: string;
   ticketIds: string[];
+  segmentedEntries?: SegmentedSnapshotEntry[];
 }
 
 export interface SnapshotCommitment {
@@ -21,6 +27,10 @@ export interface SnapshotCommitment {
   paidCount: number;
   publishedAt: string;
   commitmentHash: string;
+  drawAlgorithmVersion?: string;
+  winnerCount?: number;
+  freeWinnerCount?: number | null;
+  paidWinnerCount?: number | null;
 }
 
 export interface CampaignDrandProof {
@@ -71,6 +81,8 @@ export interface CampaignProof {
   endAt?: string | null;
   drawAt?: string | null;
   winnerCount: number;
+  freeWinnerCount?: number | null;
+  paidWinnerCount?: number | null;
   eligibilityRules: Record<string, unknown>;
   drawAlgorithmVersion: string;
   snapshot: CampaignSnapshot;
