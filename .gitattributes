@@ -1,0 +1,4 @@
+# Commitment JSON is timestamped and must be archived byte-for-byte.
+public/commitments/*.json -text
+# RFC 3161 responses are DER/CMS binary receipts.
+public/commitments/*.tsr binary

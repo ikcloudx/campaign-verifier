@@ -324,6 +324,17 @@ export function parseProof(input: unknown): CampaignProof {
   if (proof.drawAlgorithmVersion !== proof.draw.algorithmVersion) {
     fail('drawAlgorithmVersion mismatch between proof root and draw object');
   }
+  if (proof.drawAlgorithmVersion === SEGMENTED_DRAW_ALGORITHM_VERSION) {
+    if (proof.freeWinnerCount == null || proof.paidWinnerCount == null) {
+      fail('freeWinnerCount and paidWinnerCount are required for segmented draw algorithm');
+    }
+    if (proof.freeWinnerCount + proof.paidWinnerCount !== proof.winnerCount) {
+      fail('freeWinnerCount + paidWinnerCount must equal winnerCount');
+    }
+    if (!proof.snapshot.entries) {
+      fail('snapshot.entries is required for segmented draw algorithm');
+    }
+  }
   if (proof.proofVersion && proof.proofVersion !== SUPPORTED_PROOF_VERSION) {
     fail(`unsupported proof version: ${proof.proofVersion}`);
   }

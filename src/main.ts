@@ -27,7 +27,7 @@ app.innerHTML = `
       <label for="commitment-url">第三方快照承诺 URL（可选）</label>
       <input id="commitment-url" name="commitment-url" type="url" inputmode="url" autocomplete="off"
         placeholder="https://独立站.example/commitments/summer-2026.json" />
-      <p class="hint">主站冻结后可将 <code>/api/campaigns/&lt;slug&gt;/commitment</code> 保存到独立站，再填入此处核对。</p>
+      <p class="hint">主站冻结后可将 <code>/api/campaigns/&lt;slug&gt;/commitment</code> 保存到独立站，再填入此处核对；若归档包含 RFC 3161 <code>.tsr</code>，请按 README 用 OpenSSL 独立验证。</p>
       <label for="proof-json">Proof JSON（可选）</label>
       <textarea id="proof-json" name="proof-json" rows="7" spellcheck="false"
         placeholder="{\n  &quot;slug&quot;: &quot;...&quot;\n}"></textarea>
@@ -267,7 +267,7 @@ async function verify(): Promise<void> {
     setNotice(ok
       ? (warning
         ? (integrity.externalCommitmentMatches
-          ? '验证完成，但第三方副本的历史存档时间未经本验证器证明。'
+          ? '验证完成，但 RFC 3161 receipt 未在浏览器内验证；请按 README 独立检查 .tsr。'
           : '验证完成，但存在 legacy proof 或其他警告；请查看检查项。')
         : '验证完成：公开证明、候选快照、中奖顺序和 drand Beacon 均一致。')
       : '验证完成：至少有一项检查未通过，请不要把该结果当作可信抽奖结果。', ok ? 'info' : 'error');

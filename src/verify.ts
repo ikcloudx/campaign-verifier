@@ -65,10 +65,10 @@ function commitmentFieldsMatch(left: SnapshotCommitment, right: SnapshotCommitme
     && left.eligibleCount === right.eligibleCount
     && left.freeCount === right.freeCount
     && left.paidCount === right.paidCount
-    && (left.drawAlgorithmVersion === undefined || left.drawAlgorithmVersion === right.drawAlgorithmVersion)
-    && (left.winnerCount === undefined || left.winnerCount === right.winnerCount)
-    && (left.freeWinnerCount === undefined || left.freeWinnerCount === right.freeWinnerCount)
-    && (left.paidWinnerCount === undefined || left.paidWinnerCount === right.paidWinnerCount)
+    && left.drawAlgorithmVersion === right.drawAlgorithmVersion
+    && left.winnerCount === right.winnerCount
+    && left.freeWinnerCount === right.freeWinnerCount
+    && left.paidWinnerCount === right.paidWinnerCount
     && left.publishedAt === right.publishedAt
     && same(left.commitmentHash, right.commitmentHash);
 }
@@ -120,12 +120,25 @@ export async function verifyProofIntegrity(
       : `计算值 ${expectedRulesHash} 与公开规则哈希不一致。`,
   ));
 
+  const isSegmented = proof.drawAlgorithmVersion === SEGMENTED_DRAW_ALGORITHM_VERSION;
   const uniqueTicketIds = new Set(proof.snapshot.ticketIds);
   const noDuplicateTickets = uniqueTicketIds.size === proof.snapshot.ticketIds.length;
   const expectedEligibleCount = proof.snapshot.freeCount + proof.snapshot.paidCount;
   const countMatch = expectedEligibleCount === proof.snapshot.eligibleCount
     && proof.snapshot.eligibleCount === proof.snapshot.ticketIds.length;
   const entryCountMatch = proof.snapshot.entryCount >= proof.snapshot.eligibleCount;
+
+  let segmentedCountMatch = true;
+  let segmentedCountProblem: string | null = null;
+  if (isSegmented && proof.snapshot.entries) {
+    const actualFreeCount = proof.snapshot.entries.filter((e) => e.segment === 'free').length;
+    const actualPaidCount = proof.snapshot.entries.filter((e) => e.segment === 'paid').length;
+    if (actualFreeCount !== proof.snapshot.freeCount || actualPaidCount !== proof.snapshot.paidCount) {
+      segmentedCountMatch = false;
+      segmentedCountProblem = `entries segment counts (free: ${actualFreeCount}, paid: ${actualPaidCount}) != snapshot counts (free: ${proof.snapshot.freeCount}, paid: ${proof.snapshot.paidCount})`;
+    }
+  }
+
   const countProblems = [
     ...(noDuplicateTickets ? [] : ['ticketIds contains duplicates']),
     ...(expectedEligibleCount === proof.snapshot.eligibleCount
@@ -137,31 +150,34 @@ export async function verifyProofIntegrity(
     ...(entryCountMatch
       ? []
       : [`entryCount (${proof.snapshot.entryCount}) < eligibleCount (${proof.snapshot.eligibleCount})`]),
+    ...(segmentedCountProblem ? [segmentedCountProblem] : []),
   ];
+  const allCountsMatch = noDuplicateTickets && countMatch && entryCountMatch && segmentedCountMatch;
   checks.push(check(
     'snapshot-counts',
     '快照条目数量',
-    noDuplicateTickets && countMatch && entryCountMatch,
-    noDuplicateTickets && countMatch && entryCountMatch
+    allCountsMatch,
+    allCountsMatch
       ? `快照包含 ${proof.snapshot.ticketIds.length} 个唯一抽奖票据（总条目 ${proof.snapshot.entryCount}）。`
       : `快照计数不一致：${countProblems.join('；')}`,
   ));
 
-  const isSegmented = proof.drawAlgorithmVersion === SEGMENTED_DRAW_ALGORITHM_VERSION;
   const manifest = isSegmented && proof.snapshot.entries
     ? await createSegmentedSnapshotManifest(proof.snapshot.entries)
     : await createSnapshotManifest(proof.snapshot.ticketIds);
   const manifestMatches = proof.snapshot.manifest === undefined || proof.snapshot.manifest === manifest.manifest;
   const snapshotHashMatches = same(manifest.hash, proof.snapshot.hash);
   const drawSnapshotHashMatches = same(proof.snapshot.hash, proof.draw.snapshotHash);
-  const snapshotOk = noDuplicateTickets && manifestMatches && snapshotHashMatches && drawSnapshotHashMatches;
+  const ticketIdsMatchManifest = manifest.ticketIds.length === uniqueTicketIds.size
+    && proof.snapshot.ticketIds.every((id) => manifest.ticketIds.includes(id));
+  const snapshotOk = noDuplicateTickets && manifestMatches && snapshotHashMatches && drawSnapshotHashMatches && ticketIdsMatchManifest;
   checks.push(check(
     'snapshot-hash',
     '候选人快照哈希',
     snapshotOk,
     snapshotOk
       ? `快照清单及 SHA-256 ${manifest.hash} 一致。`
-      : '快照清单、快照哈希或抽奖记录中的 snapshotHash 不一致。',
+      : '快照清单、快照哈希、ticketIds 列表或抽奖记录中的 snapshotHash 不一致。',
   ));
 
   if (proof.snapshotCommitment) {
@@ -179,7 +195,7 @@ export async function verifyProofIntegrity(
       freeWinnerCount: proof.freeWinnerCount,
       paidWinnerCount: proof.paidWinnerCount,
     });
-    const internalCommitmentMatches = commitmentFieldsMatch(proof.snapshotCommitment, expectedCommitment as unknown as SnapshotCommitment);
+    const internalCommitmentMatches = commitmentFieldsMatch(proof.snapshotCommitment, expectedCommitment);
     checks.push(check(
       'snapshot-commitment',
       '快照预承诺',
@@ -197,7 +213,7 @@ export async function verifyProofIntegrity(
       externalCommitment ? externalMatches : true,
       externalCommitment
         ? (externalMatches
-          ? '外部承诺文档与 proof 的快照承诺一致；本验证器无法证明该副本的历史发布时间。'
+          ? '外部承诺文档与 proof 的快照承诺一致；本浏览器验证器不解析 RFC 3161 receipt，请按 README 独立验证相邻的 .tsr 文件。'
           : '外部承诺文档与 proof 的快照承诺不一致。')
         : '未提供第三方承诺 URL；当前只能证明 proof 内部一致，不能证明外部预先存档。',
       true,

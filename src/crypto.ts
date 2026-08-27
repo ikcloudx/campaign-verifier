@@ -1,3 +1,5 @@
+import type { SnapshotCommitment } from './types.ts';
+
 export const DRAW_ALGORITHM_VERSION = 'campaign-drand-v1';
 export const SEGMENTED_DRAW_ALGORITHM_VERSION = 'campaign-drand-segmented-v1';
 export const PROOF_HASH_ALGORITHM = 'sha256-stable-json-v1';
@@ -53,10 +55,7 @@ export interface SnapshotCommitmentInput {
   paidWinnerCount?: number | null;
 }
 
-export async function createSnapshotCommitment(input: SnapshotCommitmentInput): Promise<Record<string, unknown> & {
-  commitmentVersion: string;
-  commitmentHash: string;
-}> {
+export async function createSnapshotCommitment(input: SnapshotCommitmentInput): Promise<SnapshotCommitment> {
   const segmented = input.freeWinnerCount != null && input.paidWinnerCount != null;
   const payload = {
     commitmentVersion: segmented
@@ -190,17 +189,14 @@ export async function selectSegmentedWinners(
   quotas: { freeWinnerCount: number; paidWinnerCount: number },
   drawSeed: string,
 ): Promise<Array<{ ticketId: string; score: string; rank: number }>> {
-  const { entries: normalized } = await createSegmentedSnapshotManifest(entries);
-  const freeWinners = await selectWinners(
-    normalized.filter((entry) => entry.segment === 'free').map((entry) => entry.ticketId),
-    quotas.freeWinnerCount,
-    drawSeed,
-  );
-  const paidWinners = await selectWinners(
-    normalized.filter((entry) => entry.segment === 'paid').map((entry) => entry.ticketId),
-    quotas.paidWinnerCount,
-    drawSeed,
-  );
+  const freeTicketIds: string[] = [];
+  const paidTicketIds: string[] = [];
+  for (const entry of entries) {
+    if (entry.segment === 'free') freeTicketIds.push(entry.ticketId);
+    else if (entry.segment === 'paid') paidTicketIds.push(entry.ticketId);
+  }
+  const freeWinners = await selectWinners(freeTicketIds, quotas.freeWinnerCount, drawSeed);
+  const paidWinners = await selectWinners(paidTicketIds, quotas.paidWinnerCount, drawSeed);
   const selected = [...freeWinners, ...paidWinners];
   return selected
     .sort((left, right) => (

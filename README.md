@@ -34,22 +34,77 @@ https://主站.example/api/campaigns/summer-2025/proof
 
 Freeze 返回 `snapshot_committed` 后，主站提供不含邮箱和用户标识的
 `GET /api/campaigns/<slug>/commitment`。运营方应先将返回的完整 JSON 原样
-保存到独立托管位置，再安排 drand target round；不要在存档完成前点击管理后台
-的 **Archive and schedule Beacon**。
+保存到独立托管位置，并为这些原始字节取得 RFC 3161 时间戳 receipt（`.tsr`），
+再调用主站管理员 API 登记归档；服务端在同一数据库事务中检查该登记后才会安排
+drand target round。不要在 JSON 和 receipt 都验证完成并登记前点击管理后台的
+**Schedule Beacon**。
+
+登记接口为 `POST /api/admin/campaigns/<campaign-id>/archive`，请求体记录
+`commitmentHash`、JSON 与 `.tsr` 的 SHA-256、两个公开 URL、verifier Git 提交和
+TSA URL。登记记录按 campaign 唯一且不可更新/删除；重复提交完全相同的数据是幂等的，
+不同数据会被拒绝。主站不会把 `.tsr` 内容复制到数据库，参与者仍应从公开 URL 下载并
+使用受信 CA bundle 独立验证回执。
 
 目标 drand round 公开前，
 将返回的完整 JSON 原样保存到独立托管位置，例如另一个 Git 仓库的提交、
-不可变对象存储，或带可信时间戳的公开归档。抽奖完成后，在本页同时填写
-proof URL 和该归档 URL；验证器会检查：
+不可变对象存储，或与 RFC 3161 `.tsr` receipt 一起发布在 GitHub Pages。抽奖完成后，
+在本页同时填写 proof URL 和该归档 JSON URL；验证器会检查：
 
 1. proof 内部重新计算出的 `snapshotCommitment`；
 2. proof 中的 commitment 与第三方归档 JSON 的字段和 `commitmentHash`；
 3. snapshot publication time 早于 drand 目标 round。
 
 只填写主站当前的 commitment URL，或填写任何内容一致但没有可验证历史时间的 URL，
-会得到“内容一致”结果，但会保留警告；当前响应本身不能证明它在抽奖前已经独立存档。
+会得到“内容一致”结果，但会保留浏览器未验证 receipt/历史发布时间的警告；当前响应
+本身不能证明它在抽奖前已经独立存档。
 第三方站点必须允许浏览器
 跨域读取 JSON（CORS），并且不应在归档文件中加入未经协议定义的敏感字段。
+
+浏览器验证器目前不解析 RFC 3161 的 CMS/ASN.1 receipt。下载归档 JSON 和相邻的
+`.tsr` 后，应使用与归档时相同的受信 TSA CA bundle 独立检查：
+
+```bash
+curl --fail --location --output summer-test1.json \
+  https://ikcloudx.github.io/campaign-verifier/commitments/summer-test1.json
+curl --fail --location --output summer-test1.tsr \
+  https://ikcloudx.github.io/campaign-verifier/commitments/summer-test1.tsr
+openssl ts -verify \
+  -data summer-test1.json \
+  -in summer-test1.tsr \
+  -CAfile ./.secrets/freetsa-cacert.pem \
+  -untrusted ./.secrets/freetsa-tsa.crt
+```
+
+当前归档脚本默认使用 FreeTSA：
+`https://freetsa.org/tsr`、`./.secrets/freetsa-cacert.pem` 和
+`./.secrets/freetsa-tsa.crt`。当这些默认值生效时，脚本会自动创建
+`.secrets`，在文件缺失或指纹不匹配时通过 HTTPS 下载 FreeTSA 的根 CA 与 TSA
+证书，并将文件 SHA-256 与脚本内置的官方指纹比对；已预置且指纹匹配的文件不会
+重复下载。指纹来源是 FreeTSA 的
+[Certification Practice Statement](https://www.freetsa.org/freetsa_cps.html)，
+脚本不会从同一站点再下载一个“指纹文件”来形成循环信任。审计或离线环境仍可通过
+独立信任渠道预置并核对文件。如果改用其他 TSA，请替换为该提供方的 `-CAfile`
+和 `-untrusted` 文件；自定义 TSA 不会触发 FreeTSA 的自动下载。
+
+如果配置了 `CAMPAIGN_TSA_POLICY`，还应追加 `-policy <OID>`。
+
+`openssl ts -verify` 必须报告 `Verification: OK`，并且 receipt 中的时间必须早于
+目标 drand round。TSA CA bundle 必须通过独立渠道固定；不要从待验证的 Pages
+站点下载它。
+
+若要让 Git 提交具备长期证据价值，应在 verifier 仓库启用分支保护、禁止强制推送，
+并限制可写入该分支的账号；脚本的路径检查不能替代这些仓库策略。
+首次启用前，请先提交本仓库的 `.gitattributes`，确保 JSON 不做换行转换、`.tsr`
+按二进制文件保存；归档脚本要求运行前工作区保持 clean。clean 状态只保护归档输入，
+不替代对 verifier 代码版本的审查或固定。
+
+对于旧版本脚本已经提交的 JSON，只要活动仍处于 `snapshot_committed`，归档脚本会验证
+其原始字节后以新的提交补上 `.tsr`，不会重写原 JSON。
+
+归档脚本会在验证完成后、提交前再次读取活动状态，作为并发调度的乐观保护；设置
+`CAMPAIGN_ARCHIVE_ADMIN_TOKEN` 并使用 `--push` 时，脚本会在 verifier 提交推送后
+自动登记归档。未设置令牌时，脚本仍可生成和推送文件，但必须由管理员手动调用登记 API；
+没有登记记录，`Schedule Beacon` 会被主站和数据库触发器共同拒绝。
 
 验证器的输入上限是 proof JSON 16 MiB、250,000 个 ticket、JSON 深度 64 层和
 500,000 个节点；第三方 commitment 上限为 256 KiB。proof/commitment 请求分别
@@ -137,7 +192,7 @@ score 升序（再按 ticketId）就是中奖顺序。验证器刻意独立实�
 
 ## 信任边界
 
-验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，以及输入的外部副本内容一致；它不能仅凭一个 URL 证明外部副本的历史发布时间，也不能证明主站在快照发布前没有漏记或错误筛选用户。运营方应公开保存 proof 原文、发布时间、活动规则和可验证的存档凭据；参与者应自行保存验证结果。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
+验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，以及输入的外部副本内容一致；它不能仅凭一个 URL 证明外部副本的历史发布时间，也不能在浏览器内验证 RFC 3161 receipt。运营方应公开保存 proof 原文、发布时间、活动规则、原始 commitment JSON 和 `.tsr` 存档凭据；参与者应使用受信 TSA CA bundle 独立验证 receipt，并确认 TSA 时间早于目标 drand round。验证器也不能证明主站在快照发布前没有漏记或错误筛选用户。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
 
 相关协议文档：
 
@@ -145,5 +200,6 @@ score 升序（再按 ticketId）就是中奖顺序。验证器刻意独立实�
 - [drand clients](https://docs.drand.love/developer/clients/)
 - [GitHub Pages custom workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-for-github-pages)
 - [Cloudflare Pages static deployments](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/)
+- [RFC 3161 Time-Stamp Protocol](https://www.rfc-editor.org/rfc/rfc3161.html)
 - [RFC 8785 JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785.html)（本项目使用版本化的项目内稳定 JSON 规则）
 - [OpenTimestamps](https://opentimestamps.org/)（可选的外部时间戳归档方案）

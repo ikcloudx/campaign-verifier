@@ -277,3 +277,56 @@ test('verifies a segmented proof (campaign-drand-segmented-v1 & campaign-snapsho
   assert.equal(parsed.snapshotCommitment?.commitmentVersion, 'campaign-snapshot-v2');
   assert.ok(result.checks.every((c) => c.ok));
 });
+
+test('rejects a segmented proof with mismatched winner quota sum', async () => {
+  const proofData: Record<string, unknown> = {
+    proofVersion: '1',
+    proofHashAlgorithm: 'sha256-stable-json-v1',
+    id: 'segmented-bad-quota',
+    slug: 'bad-quota',
+    name: 'Bad Quota Campaign',
+    status: 'drawn',
+    winnerCount: 5,
+    freeWinnerCount: 2,
+    paidWinnerCount: 2,
+    eligibilityRules: { requireActive: true },
+    drawAlgorithmVersion: 'campaign-drand-segmented-v1',
+    snapshot: {
+      hash: '1750d274ef6faa7cdc0ae069f996ac02d154322025e38e197e6ddffdfbb073ae',
+      rulesHash: '75d8b35c3268c978bdf75ad781fc7061b1a3e6d2d5b97863722f3bbc149efe4e',
+      publishedAt: '2025-06-01T00:00:00.000Z',
+      entryCount: 4,
+      eligibleCount: 4,
+      freeCount: 2,
+      paidCount: 2,
+      ticketIds: ['t1', 't2', 't3', 't4'],
+      entries: [
+        { ticketId: 't1', segment: 'free' },
+        { ticketId: 't2', segment: 'free' },
+        { ticketId: 't3', segment: 'paid' },
+        { ticketId: 't4', segment: 'paid' },
+      ],
+    },
+    drand: {
+      beaconId: 'quicknet',
+      chainHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      targetRound: 1000,
+      publicKey: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      randomness: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      signature: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    },
+    draw: {
+      beaconId: 'quicknet',
+      chainHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      round: 1000,
+      randomness: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      signature: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      snapshotHash: '1750d274ef6faa7cdc0ae069f996ac02d154322025e38e197e6ddffdfbb073ae',
+      rulesHash: '75d8b35c3268c978bdf75ad781fc7061b1a3e6d2d5b97863722f3bbc149efe4e',
+      drawSeed: '3e586ceb2335d99f1d9c059a2255f5b2166df538b01377bf05e8d3f0344938c8',
+      algorithmVersion: 'campaign-drand-segmented-v1',
+      winners: [],
+    },
+  };
+  assert.throws(() => parseProof(proofData), ProofValidationError);
+});
