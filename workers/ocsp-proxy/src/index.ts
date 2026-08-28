@@ -105,7 +105,9 @@ export default {
     try {
       const upstream = await fetch(UPSTREAM_OCSP_URL, {
         method: 'POST',
-        redirect: 'error',
+        // Workers supports only "follow" and "manual". Keep redirects
+        // visible and reject them below instead of forwarding elsewhere.
+        redirect: 'manual',
         headers: {
           Accept: 'application/ocsp-response',
           'Content-Type': 'application/ocsp-request',
