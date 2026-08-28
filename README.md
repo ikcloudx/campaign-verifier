@@ -63,12 +63,18 @@ TSA URL。登记记录按 campaign 唯一且不可更新/删除；重复提交�
 
 浏览器验证器会自动校验 v2 proof 所指向的归档 JSON/TSR 原始字节摘要，并在浏览器内
 解析 RFC 3161 的 CMS/ASN.1 receipt，验证 MessageImprint、CMS/TSA 签名、
-SigningCertificate、TSA 证书链、timeStamping EKU、TSA 身份、关键证书扩展和时间顺序。浏览器不使用
-系统证书库，而是使用 verifier 内置、固定 SHA-256 指纹的 FreeTSA 根证书；TSR
-内嵌的证书只能作为链材料，不能自动成为信任锚。当前页面会把 CRL/OCSP 吊销状态
-标为“未检查”，因为 FreeTSA 的公开吊销地址不是适合 HTTPS 静态页面直接读取的
-CORS 端点。需要独立核对吊销状态时，仍可下载归档 JSON 和相邻的 `.tsr`，使用与
-归档时相同的受信 TSA CA bundle 检查回执：
+SigningCertificate、TSA 证书链、timeStamping EKU、TSA 身份、关键证书扩展、时间顺序，
+以及本站同源镜像的 FreeTSA CRL。浏览器不使用系统证书库，而是使用 verifier 内置、
+固定 SHA-256 指纹的 FreeTSA 根证书；TSR 内嵌的证书只能作为链材料，不能自动成为信任锚。
+CRL 的原始 PEM/DER 会在浏览器中解析，使用固定根证书验证签名，检查 `thisUpdate`/
+`nextUpdate`，再按 TSA 签名证书序列号查吊销列表。CRL 缺失、签名错误或过期时，验证项
+会失败（不会把“无法检查”当作“未吊销”）。
+
+FreeTSA 的公开吊销地址不是适合 HTTPS 静态页面直接读取的 CORS 端点，因此仓库保留了
+`public/revocation/freetsa-root-ca.crl` 的同源副本。`.github/workflows/refresh-freetsa-crl.yml`
+每周一 03:00 UTC 下载官方 CRL，先用固定指纹的根证书验证 CRL 签名和有效期，再在有变化时
+提交更新；提交完成后 Pages 工作流会重新构建发布。也可以在 Actions 页面手动触发刷新。
+每周刷新意味着吊销信息最多可能滞后约 7 天；高安全场景应把 cron 调整为每日或每 6 小时。
 
 MessageImprint 只接受 SHA-256、SHA-384 或 SHA-512；SHA-1 会被拒绝。这里不影响
 ESSCertID v1 使用 SHA-1 标识签名证书，因为证书标识摘要与被加时间戳的数据摘要是
@@ -162,7 +168,7 @@ npm run dev
 
 ## 部署
 
-`.github/workflows/pages.yml` 会在 `main` 分支变更后运行测试、类型检查和构建，并部署到 GitHub Pages。仓库 Settings → Pages 中选择 **GitHub Actions** 作为发布来源。
+`.github/workflows/pages.yml` 会在 `main` 分支变更、手动触发或 CRL 刷新工作流完成后运行测试、类型检查和构建，并部署到 GitHub Pages。仓库 Settings → Pages 中选择 **GitHub Actions** 作为发布来源。
 
 该站点也可以部署到 Cloudflare Pages：构建命令为 `npm run build`，输出目录为 `dist`，Node.js 版本使用 22。部署平台只托管静态文件，不会获得 proof 中的任何额外权限。
 
@@ -227,7 +233,7 @@ HTTPS URL，摘要对应发布到 Pages 的原始字节：
 
 ## 信任边界
 
-验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，并在 v2 中自动证明归档 JSON/TSR 原始字节与不可变登记值一致；它不能仅凭一个 URL 证明外部副本的历史发布时间，也不能仅凭 TSA 签名证明吊销状态当前有效。浏览器会验证 RFC 3161 的 CMS/ASN.1、签名、固定信任根、证书链和时间顺序；参与者仍可使用受信 TSA CA bundle 独立检查 CRL/OCSP，并确认 TSA 时间早于目标 drand round。验证器也不能证明主站在快照发布前没有漏记或错误筛选用户。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
+验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，并在 v2 中自动证明归档 JSON/TSR 原始字节与不可变登记值一致；它不能仅凭一个 URL 证明外部副本的历史发布时间。浏览器会验证 RFC 3161 的 CMS/ASN.1、签名、固定信任根、证书链、时间顺序和同源镜像 CRL；CRL 是定期快照，不等同于实时 OCSP，刷新间隔内可能存在状态滞后。参与者仍可使用受信 TSA CA bundle 独立检查最新 CRL/OCSP，并确认 TSA 时间早于目标 drand round。验证器也不能证明主站在快照发布前没有漏记或错误筛选用户。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
 
 相关协议文档：
 

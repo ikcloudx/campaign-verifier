@@ -2,3 +2,6 @@
 public/commitments/*.json -text
 # RFC 3161 responses are DER/CMS binary receipts.
 public/commitments/*.tsr binary
+# The mirrored CRL is CA-signed; preserve its exact upstream bytes whether it
+# is published as PEM text or DER binary.
+public/revocation/*.crl -text

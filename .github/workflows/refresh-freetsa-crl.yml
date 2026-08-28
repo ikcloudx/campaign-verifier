@@ -1,0 +1,82 @@
+name: Refresh FreeTSA CRL
+
+on:
+  schedule:
+    # GitHub Actions cron expressions are evaluated in UTC.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: freetsa-crl
+  cancel-in-progress: true
+
+env:
+  FREETSA_CRL_SOURCE_URL: https://www.freetsa.org/crl/root_ca.crl
+  FREETSA_ROOT_URL: https://www.freetsa.org/files/cacert.pem
+  FREETSA_ROOT_SHA256: a6379e7cecc05faa3cbf076013d745e327bbbaa38c0b9af22469d4701d18aabc
+  MAX_CRL_BYTES: 2097152
+  CRL_PATH: public/revocation/freetsa-root-ca.crl
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Download and verify the signed CRL
+        shell: bash
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d)"
+          trap 'rm -rf "$work_dir"' EXIT
+
+          curl --fail --location --proto '=https' --tlsv1.2 --max-time 30 \
+            --output "$work_dir/crl" "$FREETSA_CRL_SOURCE_URL"
+          curl --fail --location --proto '=https' --tlsv1.2 --max-time 30 \
+            --output "$work_dir/root.pem" "$FREETSA_ROOT_URL"
+          crl_bytes="$(wc -c < "$work_dir/crl")"
+          test "$crl_bytes" -le "$MAX_CRL_BYTES"
+
+          root_sha256="$(openssl x509 -in "$work_dir/root.pem" -outform DER \
+            | sha256sum | awk '{print $1}')"
+          test "$root_sha256" = "$FREETSA_ROOT_SHA256"
+
+          crl_format=DER
+          if openssl crl -in "$work_dir/crl" -inform PEM -noout; then
+            crl_format=PEM
+          fi
+          openssl crl -in "$work_dir/crl" -inform "$crl_format" \
+            -CAfile "$work_dir/root.pem" -verify -noout
+          last_update="$(openssl crl -in "$work_dir/crl" -inform "$crl_format" \
+            -lastupdate -noout | sed 's/^lastUpdate=//')"
+          next_update="$(openssl crl -in "$work_dir/crl" -inform "$crl_format" \
+            -nextupdate -noout | sed 's/^nextUpdate=//')"
+          last_epoch="$(date -d "$last_update" +%s)"
+          next_epoch="$(date -d "$next_update" +%s)"
+          now_epoch="$(date -u +%s)"
+          test "$last_epoch" -le "$((now_epoch + 300))"
+          test "$next_epoch" -gt "$now_epoch"
+          # Alert through a failed scheduled run if the issuer does not publish
+          # a replacement at least two weeks before the current CRL expires.
+          test "$next_epoch" -ge "$((now_epoch + 1209600))"
+
+          mkdir -p "$(dirname "$CRL_PATH")"
+          cp "$work_dir/crl" "$CRL_PATH"
+
+      - name: Commit a changed CRL
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- "$CRL_PATH"; then
+            echo 'FreeTSA CRL is unchanged.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- "$CRL_PATH"
+          git commit -m 'chore: refresh FreeTSA CRL'
+          git push origin HEAD:main

@@ -9,6 +9,10 @@ import {
   TimeStampResp,
   TSTInfo,
 } from 'pkijs';
+import { FREETSA_TSA_URL } from './revocation-config.ts';
+import { verifyCertificateWithCrl } from './revocation.ts';
+
+export { FREETSA_TSA_URL } from './revocation-config.ts';
 
 export interface Rfc3161Check {
   id: string;
@@ -24,6 +28,15 @@ export interface Rfc3161VerificationResult {
   generatedAt?: Date;
   policy?: string;
   signerSubject?: string;
+}
+
+export interface Rfc3161VerificationOptions {
+  /** Raw DER or PEM CRL mirrored by the verifier's static site. */
+  revocationCrlBytes?: Uint8Array;
+  /** A fetch/transport error is rendered as a failed revocation check. */
+  revocationError?: string;
+  /** Injectable for deterministic tests; production uses the current time. */
+  revocationCheckDate?: Date;
 }
 
 /** FreeTSA's published root CA, downloaded and fingerprinted independently. */
@@ -73,7 +86,6 @@ Ut5G21JE4cNK6NNucS+fzg1JPX0+3VhsYZjj7D5uljRvQXrJ8iHgr/M6j2oLHvTA
 I2MLdq2qjZFDOCXsxBxJpbmLGBx9ow6ZerlUxzws2AWv2pk=
 -----END CERTIFICATE-----`;
 
-export const FREETSA_TSA_URL = 'https://freetsa.org/tsr';
 export const FREETSA_ROOT_SHA256 = 'a6379e7cecc05faa3cbf076013d745e327bbbaa38c0b9af22469d4701d18aabc';
 export const FREETSA_POLICY_OID = '1.2.3.4.1';
 /** Keep the parser bounded even when it is called outside the UI fetch guard. */
@@ -268,6 +280,7 @@ export async function verifyRfc3161Receipt(
   receiptBytes: Uint8Array,
   dataBytes: Uint8Array,
   tsaUrl?: string,
+  options: Rfc3161VerificationOptions = {},
 ): Promise<Rfc3161VerificationResult> {
   const checks: Rfc3161Check[] = [];
   const sizeOk = receiptBytes.byteLength <= MAX_RFC3161_RECEIPT_BYTES;
@@ -565,14 +578,42 @@ export async function verifyRfc3161Receipt(
     tsaIdentityOk ? 'TSTInfo 的 TSA 名称与签名证书主体一致。' : 'TSTInfo 的 TSA 名称与签名证书主体不一致。',
   ));
 
-  const revocationUnknown = check(
-    'rfc3161-revocation',
-    'TSA 吊销状态',
-    true,
-    '未在线检查 CRL/OCSP；浏览器端仅完成签名、证书链和证书用途验证。',
-    true,
-  );
-  checks.push(revocationUnknown);
+  if (options.revocationCrlBytes && signerCertificate) {
+    const revocation = await verifyCertificateWithCrl(
+      options.revocationCrlBytes,
+      signerCertificate,
+      rootCertificate,
+      { checkDate: options.revocationCheckDate },
+    );
+    checks.push(check(
+      'rfc3161-revocation',
+      'TSA 吊销状态（CRL）',
+      revocation.ok,
+      revocation.detail,
+    ));
+  } else if (options.revocationCrlBytes) {
+    checks.push(check(
+      'rfc3161-revocation',
+      'TSA 吊销状态（CRL）',
+      false,
+      '无法确定 TSA 签名证书，不能执行 CRL 序列号检查。',
+    ));
+  } else if (options.revocationError) {
+    checks.push(check(
+      'rfc3161-revocation',
+      'TSA 吊销状态（CRL）',
+      false,
+      `无法读取同源 CRL：${options.revocationError}`,
+    ));
+  } else {
+    checks.push(check(
+      'rfc3161-revocation',
+      'TSA 吊销状态（CRL）',
+      true,
+      '未提供同源 CRL；浏览器仅完成签名、证书链和证书用途验证。',
+      true,
+    ));
+  }
 
   return finish(checks, {
     generatedAt: tstInfo.genTime,

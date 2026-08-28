@@ -12,6 +12,7 @@ import {
 } from './crypto.ts';
 import { assertNoSensitiveData, parseSnapshotCommitment } from './proof-schema.ts';
 import type { CampaignProof, CampaignSnapshotArchive, SnapshotCommitment } from './types.ts';
+import type { Rfc3161VerificationOptions } from './rfc3161.ts';
 
 export interface CheckResult {
   id: string;
@@ -29,6 +30,10 @@ export interface IntegrityVerificationResult {
 export interface ArchiveVerificationResult {
   checks: CheckResult[];
   ok: boolean;
+}
+
+export interface ArchiveVerificationOptions {
+  rfc3161?: Rfc3161VerificationOptions;
 }
 
 function check(id: string, label: string, ok: boolean, detail: string, warning = false): CheckResult {
@@ -91,6 +96,7 @@ export async function verifySnapshotArchive(
   archive: CampaignSnapshotArchive,
   commitmentBytes: Uint8Array,
   receiptBytes: Uint8Array,
+  options: ArchiveVerificationOptions = {},
 ): Promise<ArchiveVerificationResult> {
   const checks: CheckResult[] = [];
   const commitmentJsonSha256 = await sha256HexBytes(commitmentBytes);
@@ -152,7 +158,12 @@ export async function verifySnapshotArchive(
   }
 
   const { verifyRfc3161Receipt } = await import('./rfc3161.ts');
-  const rfc3161 = await verifyRfc3161Receipt(receiptBytes, commitmentBytes, archive.tsaUrl);
+  const rfc3161 = await verifyRfc3161Receipt(
+    receiptBytes,
+    commitmentBytes,
+    archive.tsaUrl,
+    options.rfc3161,
+  );
   checks.push(...rfc3161.checks);
 
   const snapshotTime = epochMs(proof.snapshot.publishedAt);

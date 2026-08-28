@@ -10,6 +10,11 @@ import {
 import type { CampaignProof } from './types.ts';
 import type { ArchiveVerificationResult, CheckResult, IntegrityVerificationResult } from './verify.ts';
 import { verifyProofIntegrity, verifySnapshotArchive } from './verify.ts';
+import {
+  FREETSA_CRL_MIRROR_PATH,
+  FREETSA_TSA_URL,
+  MAX_REVOCATION_CRL_BYTES,
+} from './revocation-config.ts';
 
 const app = document.querySelector<HTMLElement>('#app');
 if (!app) throw new Error('Missing application root');
@@ -30,7 +35,7 @@ app.innerHTML = `
         <button type="submit" id="verify-button">开始验证</button>
       </div>
       <p class="hint">也可以直接粘贴 proof JSON；所有哈希和中奖排序均在本浏览器执行。</p>
-      <p class="hint">验证器只接受包含不可变归档的 protocol v2 proof，会自动读取归档 JSON 和 RFC 3161 <code>.tsr</code>。浏览器会解析 CMS/ASN.1，验证 TSA 签名、固定信任根和证书用途；MessageImprint 仅接受 SHA-256/384/512，CRL/OCSP 吊销状态仍会明确标记为未检查。</p>
+      <p class="hint">验证器只接受包含不可变归档的 protocol v2 proof，会自动读取归档 JSON、RFC 3161 <code>.tsr</code> 和本站同源镜像的 FreeTSA CRL。浏览器会解析 CMS/ASN.1，验证 TSA 签名、固定信任根、证书用途和 CRL 签名/有效期/序列号；MessageImprint 仅接受 SHA-256/384/512。</p>
       <label for="proof-json">Proof JSON（可选）</label>
       <textarea id="proof-json" name="proof-json" rows="7" spellcheck="false"
         placeholder="{\n  &quot;slug&quot;: &quot;...&quot;\n}"></textarea>
@@ -109,7 +114,7 @@ function renderSummary(proof: CampaignProof): void {
   appendSummaryRow('快照承诺', proof.snapshotCommitment.commitmentHash);
   appendSummaryRow('归档 JSON', proof.archive.archiveUrl);
   appendSummaryRow('RFC 3161 receipt', proof.archive.receiptUrl);
-  appendSummaryRow('协议提示', '归档元数据已纳入 proofHash；浏览器会校验 JSON/TSR 原始字节摘要，并在本地解析和验证 RFC 3161 签名与证书链。');
+  appendSummaryRow('协议提示', '归档元数据已纳入 proofHash；浏览器会校验 JSON/TSR 原始字节摘要，并在本地解析和验证 RFC 3161 签名、证书链及同源 CRL 吊销状态。');
 }
 
 function renderChecks(checks: CheckResult[]): void {
@@ -262,11 +267,11 @@ async function fetchJson(url: string, label: string, maxBytes = MAX_PROOF_JSON_B
   }
 }
 
-async function fetchBytes(url: string, label: string, maxBytes: number): Promise<Uint8Array> {
+async function fetchBytes(url: string, label: string, maxBytes: number, cache: RequestCache = 'default'): Promise<Uint8Array> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await fetch(url, { credentials: 'omit', signal: controller.signal });
+    const response = await fetch(url, { credentials: 'omit', cache, signal: controller.signal });
     if (!response.ok) throw new Error(`${label} 请求失败（HTTP ${response.status}）。`);
     return await readResponseBytes(response, maxBytes, label);
   } catch (error) {
@@ -307,6 +312,12 @@ async function readSnapshotArchive(proof: CampaignProof): Promise<{
   return { commitmentBytes, receiptBytes };
 }
 
+async function readRevocationCrl(tsaUrl: string): Promise<Uint8Array | undefined> {
+  if (tsaUrl !== FREETSA_TSA_URL) return undefined;
+  const url = new URL(FREETSA_CRL_MIRROR_PATH, document.baseURI).toString();
+  return fetchBytes(url, 'FreeTSA CRL', MAX_REVOCATION_CRL_BYTES, 'no-cache');
+}
+
 async function verify(): Promise<void> {
   setLoading(true);
   setNotice('正在读取公开证明并在本地复算…');
@@ -314,11 +325,19 @@ async function verify(): Promise<void> {
     const proof = parseProof(await readProof());
     const integrity = await verifyProofIntegrity(proof);
     const archive = await readSnapshotArchive(proof);
+    let revocationCrlBytes: Uint8Array | undefined;
+    let revocationError: string | undefined;
+    try {
+      revocationCrlBytes = await readRevocationCrl(proof.archive.tsaUrl);
+    } catch (error) {
+      revocationError = error instanceof Error ? error.message : 'CRL 请求失败。';
+    }
     const archiveVerification = await verifySnapshotArchive(
       proof,
       proof.archive,
       archive.commitmentBytes,
       archive.receiptBytes,
+      { rfc3161: { revocationCrlBytes, revocationError } },
     );
     const drand = await verifyDrandBeacon(proof);
     renderResult(proof, integrity, drand, archiveVerification);
@@ -327,7 +346,7 @@ async function verify(): Promise<void> {
     const warning = checksHaveWarnings(checks);
     setNotice(ok
       ? (warning
-        ? '验证完成：RFC 3161 签名和证书链已在浏览器内验证，但 CRL/OCSP 吊销状态未检查。'
+        ? '验证完成，但有验证警告；请查看检查项明细。'
         : '验证完成：公开证明、候选快照、中奖顺序和 drand Beacon 均一致。')
       : '验证完成：至少有一项检查未通过，请不要把该结果当作可信抽奖结果。', ok ? 'info' : 'error');
   } catch (error) {

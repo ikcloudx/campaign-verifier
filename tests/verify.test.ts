@@ -22,6 +22,7 @@ import {
 } from '../src/proof-schema.ts';
 import { verifyProofIntegrity, verifySnapshotArchive } from '../src/verify.ts';
 import { MAX_RFC3161_RECEIPT_BYTES, verifyRfc3161Receipt } from '../src/rfc3161.ts';
+import { MAX_REVOCATION_CRL_BYTES } from '../src/revocation-config.ts';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/valid-proof.json', import.meta.url), 'utf8')) as Record<string, unknown>;
 
@@ -228,17 +229,69 @@ test('parses and verifies an archived protocol v2 proof without trusting reseria
   assert.equal(result.checks.find((check) => check.id === 'rfc3161-structure')?.ok, false);
 });
 
-test('verifies the published RFC 3161 receipt with a pinned TSA root', async () => {
+test('verifies the published RFC 3161 receipt with a pinned TSA root and mirrored CRL', async () => {
   const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
   const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
-  const result = await verifyRfc3161Receipt(receiptBytes, commitmentBytes, 'https://freetsa.org/tsr');
+  const crlBytes = new Uint8Array(readFileSync(new URL('../public/revocation/freetsa-root-ca.crl', import.meta.url)));
+  const result = await verifyRfc3161Receipt(
+    receiptBytes,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+    { revocationCrlBytes: crlBytes, revocationCheckDate: new Date('2026-08-28T00:00:00.000Z') },
+  );
 
   assert.equal(result.ok, true);
   assert.equal(result.generatedAt?.toISOString(), '2026-08-28T05:08:18.000Z');
   assert.equal(result.checks.find((check) => check.id === 'rfc3161-message-imprint')?.ok, true);
   assert.equal(result.checks.find((check) => check.id === 'rfc3161-cms-signature')?.ok, true);
   assert.equal(result.checks.find((check) => check.id === 'rfc3161-certificate-chain')?.ok, true);
-  assert.equal(result.checks.find((check) => check.id === 'rfc3161-revocation')?.warning, true);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-revocation')?.ok, true);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-revocation')?.warning, undefined);
+});
+
+test('fails closed when the browser cannot obtain the mirrored CRL', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const result = await verifyRfc3161Receipt(
+    receiptBytes,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+    { revocationError: '请求超时。' },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-revocation')?.ok, false);
+  assert.match(result.checks.find((check) => check.id === 'rfc3161-revocation')?.detail || '', /请求超时/);
+});
+
+test('fails closed when the mirrored CRL is stale', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const crlBytes = new Uint8Array(readFileSync(new URL('../public/revocation/freetsa-root-ca.crl', import.meta.url)));
+  const result = await verifyRfc3161Receipt(
+    receiptBytes,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+    { revocationCrlBytes: crlBytes, revocationCheckDate: new Date('2100-01-01T00:00:00.000Z') },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-revocation')?.ok, false);
+  assert.match(result.checks.find((check) => check.id === 'rfc3161-revocation')?.detail || '', /过期/);
+});
+
+test('rejects an oversized mirrored CRL before ASN.1 processing', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const result = await verifyRfc3161Receipt(
+    receiptBytes,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+    { revocationCrlBytes: new Uint8Array(MAX_REVOCATION_CRL_BYTES + 1) },
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.checks.find((check) => check.id === 'rfc3161-revocation')?.detail || '', /KiB/);
 });
 
 test('rejects a receipt when its TSA endpoint is outside the configured trust profile', async () => {
