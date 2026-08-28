@@ -1,7 +1,7 @@
 {
-  "proofVersion": "1",
+  "proofVersion": "2",
   "proofHashAlgorithm": "sha256-stable-json-v1",
-  "proofHash": "f7741bd747dc136fb1065a5f26dce1b2f146c5b43dcf9edbc0f6e22634c97aa6",
+  "proofHash": "fba2798618728b9251a3c89e162808ac6c3a8bed33ebb5f752fbe793beec3df5",
   "id": "campaign-2025-summer",
   "slug": "summer-2025",
   "name": "Summer raffle",
@@ -42,6 +42,16 @@
     "paidCount": 1,
     "publishedAt": "2025-07-01T00:00:02.000Z",
     "commitmentHash": "476a4adee7a326c1ea0e28ab730134a4a87f5c36f9a1155b3783f2555c353f64"
+  },
+  "archive": {
+    "type": "rfc3161",
+    "commitmentHash": "476a4adee7a326c1ea0e28ab730134a4a87f5c36f9a1155b3783f2555c353f64",
+    "commitmentJsonSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "timestampReceiptSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "archiveUrl": "https://verifier.example/commitments/summer-2025.json",
+    "receiptUrl": "https://verifier.example/commitments/summer-2025.tsr",
+    "verifierCommit": "1111111111111111111111111111111111111111",
+    "tsaUrl": "https://freetsa.org/tsr"
   },
   "drand": {
     "beaconId": "quicknet",

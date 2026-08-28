@@ -2,6 +2,7 @@ import type {
   CampaignDrawProof,
   CampaignDrandProof,
   CampaignProof,
+  CampaignSnapshotArchive,
   CampaignSnapshot,
   CampaignWinner,
   SegmentedSnapshotEntry,
@@ -19,9 +20,11 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/i;
 const HEX_PATTERN = /^[0-9a-f]+$/i;
 const EMAIL_PATTERN = /[^\s@]+@[^\s@]+\.[^\s@]+/i;
 const SENSITIVE_KEY_PATTERN = /(?:email|user_?id|account_?id|customer_?id|phone|payment_?id|order_?id)/i;
-export const SUPPORTED_PROOF_VERSION = '1';
+export const SUPPORTED_PROOF_VERSION = '2';
 export const COMPLETED_PROOF_STATUS = 'drawn';
 export const MAX_PROOF_JSON_BYTES = 16 * 1024 * 1024;
+export const MAX_ARCHIVE_JSON_BYTES = 256 * 1024;
+export const MAX_ARCHIVE_RECEIPT_BYTES = 2 * 1024 * 1024;
 export const MAX_TICKET_COUNT = 250_000;
 const MAX_JSON_DEPTH = 64;
 const MAX_JSON_NODES = 500_000;
@@ -65,6 +68,35 @@ function hashValue(value: unknown, path: string): string {
   const result = stringValue(value, path);
   if (!HASH_PATTERN.test(result)) return fail(`${path} must be a 64-character hexadecimal hash`);
   return result.toLowerCase();
+}
+
+function commitValue(value: unknown, path: string): string {
+  const result = stringValue(value, path).toLowerCase();
+  if (!/^[0-9a-f]{40,64}$/.test(result)) {
+    return fail(`${path} must be a 40- to 64-character hexadecimal commit`);
+  }
+  return result;
+}
+
+function httpsUrlValue(value: unknown, path: string): string {
+  const result = stringValue(value, path);
+  let parsed: URL;
+  try {
+    parsed = new URL(result);
+  } catch {
+    return fail(`${path} must be an HTTPS URL without credentials, query parameters, or a fragment`);
+  }
+  if (
+    parsed.protocol !== 'https:'
+    || !parsed.hostname
+    || parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+  ) {
+    return fail(`${path} must be an HTTPS URL without credentials, query parameters, or a fragment`);
+  }
+  return result;
 }
 
 function hexValue(value: unknown, path: string, minimumLength = 2): string {
@@ -266,14 +298,38 @@ export function parseSnapshotCommitment(value: unknown, path = 'snapshotCommitme
   };
 }
 
+export function parseSnapshotArchive(value: unknown, path = 'archive'): CampaignSnapshotArchive {
+  const input = record(value, path);
+  assertKnownKeys(input, [
+    'type', 'commitmentHash', 'commitmentJsonSha256', 'timestampReceiptSha256',
+    'archiveUrl', 'receiptUrl', 'verifierCommit', 'tsaUrl',
+  ], path);
+  const type = stringValue(input.type, `${path}.type`);
+  if (type !== 'rfc3161') fail(`${path}.type must be rfc3161`);
+  return {
+    type: 'rfc3161',
+    commitmentHash: hashValue(input.commitmentHash, `${path}.commitmentHash`),
+    commitmentJsonSha256: hashValue(input.commitmentJsonSha256, `${path}.commitmentJsonSha256`),
+    timestampReceiptSha256: hashValue(input.timestampReceiptSha256, `${path}.timestampReceiptSha256`),
+    archiveUrl: httpsUrlValue(input.archiveUrl, `${path}.archiveUrl`),
+    receiptUrl: httpsUrlValue(input.receiptUrl, `${path}.receiptUrl`),
+    verifierCommit: commitValue(input.verifierCommit, `${path}.verifierCommit`),
+    tsaUrl: httpsUrlValue(input.tsaUrl, `${path}.tsaUrl`),
+  };
+}
+
 export function parseProof(input: unknown): CampaignProof {
   assertSafeJson(input);
   assertNoSensitiveData(input);
   const root = record(input, 'proof');
+  const proofVersion = stringValue(root.proofVersion, 'proofVersion');
+  if (proofVersion !== SUPPORTED_PROOF_VERSION) {
+    fail(`unsupported proof version: ${proofVersion}`);
+  }
   assertKnownKeys(root, [
     'proofVersion', 'proofHashAlgorithm', 'proofHash', 'id', 'slug', 'name', 'status', 'startAt',
     'endAt', 'drawAt', 'winnerCount', 'freeWinnerCount', 'paidWinnerCount', 'eligibilityRules',
-    'drawAlgorithmVersion', 'snapshot', 'snapshotCommitment', 'drand', 'draw',
+    'drawAlgorithmVersion', 'snapshot', 'snapshotCommitment', 'archive', 'drand', 'draw',
   ], 'proof');
   const rules = record(root.eligibilityRules, 'eligibilityRules');
   const winnerCount = positiveInteger(root.winnerCount, 'winnerCount');
@@ -288,16 +344,21 @@ export function parseProof(input: unknown): CampaignProof {
   const proofHashAlgorithm = root.proofHashAlgorithm === undefined
     ? undefined
     : stringValue(root.proofHashAlgorithm, 'proofHashAlgorithm');
-  if (proofHash && proofHashAlgorithm !== PROOF_HASH_ALGORITHM) {
+  if (proofHashAlgorithm !== PROOF_HASH_ALGORITHM) {
     fail(`unsupported proof hash algorithm: ${proofHashAlgorithm || 'missing'}`);
   }
-  if (proofHashAlgorithm && !proofHash) fail('proofHash is required when proofHashAlgorithm is present');
+  if (!proofHash) fail('proofHash is required for protocol v2');
   const snapshot = parseSnapshot(root.snapshot);
-  const snapshotCommitment = root.snapshotCommitment === undefined
-    ? undefined
-    : parseSnapshotCommitment(root.snapshotCommitment);
+  if (root.snapshotCommitment === undefined) {
+    fail(`snapshotCommitment is required for protocol v${SUPPORTED_PROOF_VERSION}`);
+  }
+  if (root.archive === undefined) {
+    fail(`proof.archive is required for protocol v${SUPPORTED_PROOF_VERSION}`);
+  }
+  const snapshotCommitment = parseSnapshotCommitment(root.snapshotCommitment);
+  const archive = parseSnapshotArchive(root.archive);
   const proof: CampaignProof = {
-    proofVersion: root.proofVersion === undefined ? undefined : stringValue(root.proofVersion, 'proofVersion'),
+    proofVersion,
     proofHashAlgorithm,
     proofHash,
     id: stringValue(root.id, 'id'),
@@ -314,6 +375,7 @@ export function parseProof(input: unknown): CampaignProof {
     drawAlgorithmVersion: stringValue(root.drawAlgorithmVersion, 'drawAlgorithmVersion'),
     snapshot,
     snapshotCommitment,
+    archive,
     drand: parseDrand(root.drand),
     draw: parseDraw(root.draw),
   };
@@ -335,10 +397,7 @@ export function parseProof(input: unknown): CampaignProof {
       fail('snapshot.entries is required for segmented draw algorithm');
     }
   }
-  if (proof.proofVersion && proof.proofVersion !== SUPPORTED_PROOF_VERSION) {
-    fail(`unsupported proof version: ${proof.proofVersion}`);
-  }
-  if (proof.proofVersion === SUPPORTED_PROOF_VERSION && proof.status !== COMPLETED_PROOF_STATUS) {
+  if (proof.status !== COMPLETED_PROOF_STATUS) {
     fail(`proof status must be ${COMPLETED_PROOF_STATUS}`);
   }
   return proof;

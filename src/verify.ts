@@ -5,12 +5,13 @@ import {
   createSnapshotManifest,
   hashRules,
   hashPublicProof,
+  sha256HexBytes,
   selectSegmentedWinners,
   selectWinners,
   SEGMENTED_DRAW_ALGORITHM_VERSION,
 } from './crypto.ts';
-import { assertNoSensitiveData } from './proof-schema.ts';
-import type { CampaignProof, SnapshotCommitment } from './types.ts';
+import { assertNoSensitiveData, parseSnapshotCommitment } from './proof-schema.ts';
+import type { CampaignProof, CampaignSnapshotArchive, SnapshotCommitment } from './types.ts';
 
 export interface CheckResult {
   id: string;
@@ -23,7 +24,11 @@ export interface CheckResult {
 export interface IntegrityVerificationResult {
   checks: CheckResult[];
   ok: boolean;
-  externalCommitmentMatches: boolean;
+}
+
+export interface ArchiveVerificationResult {
+  checks: CheckResult[];
+  ok: boolean;
 }
 
 function check(id: string, label: string, ok: boolean, detail: string, warning = false): CheckResult {
@@ -73,12 +78,94 @@ function commitmentFieldsMatch(left: SnapshotCommitment, right: SnapshotCommitme
     && same(left.commitmentHash, right.commitmentHash);
 }
 
-export async function verifyProofIntegrity(
+function decodeUtf8(value: Uint8Array, label: string): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(value);
+  } catch {
+    throw new Error(`${label} 不是有效的 UTF-8 文本。`);
+  }
+}
+
+export async function verifySnapshotArchive(
   proof: CampaignProof,
-  externalCommitment?: SnapshotCommitment,
-): Promise<IntegrityVerificationResult> {
+  archive: CampaignSnapshotArchive,
+  commitmentBytes: Uint8Array,
+  receiptBytes: Uint8Array,
+): Promise<ArchiveVerificationResult> {
   const checks: CheckResult[] = [];
-  let externalCommitmentMatches = false;
+  const commitmentJsonSha256 = await sha256HexBytes(commitmentBytes);
+  const commitmentJsonHashMatches = same(commitmentJsonSha256, archive.commitmentJsonSha256);
+  checks.push(check(
+    'archive-json-sha256',
+    '归档 JSON 原始字节哈希',
+    commitmentJsonHashMatches,
+    commitmentJsonHashMatches
+      ? `归档 JSON 的 SHA-256 为 ${commitmentJsonSha256}。`
+      : `归档 JSON 的 SHA-256 为 ${commitmentJsonSha256}，与 Proof 登记值不一致。`,
+  ));
+
+  const receiptSha256 = await sha256HexBytes(receiptBytes);
+  const receiptHashMatches = same(receiptSha256, archive.timestampReceiptSha256);
+  checks.push(check(
+    'archive-receipt-sha256',
+    'RFC 3161 receipt 原始字节哈希',
+    receiptHashMatches,
+    receiptHashMatches
+      ? `TSR 的 SHA-256 为 ${receiptSha256}。`
+      : `TSR 的 SHA-256 为 ${receiptSha256}，与 Proof 登记值不一致。`,
+  ));
+
+  let archivedCommitment: SnapshotCommitment | undefined;
+  try {
+    const text = decodeUtf8(commitmentBytes, '归档 JSON');
+    archivedCommitment = parseSnapshotCommitment(JSON.parse(text), 'archiveCommitment');
+  } catch (error) {
+    checks.push(check(
+      'archive-json-commitment',
+      '归档 JSON 承诺内容',
+      false,
+      error instanceof Error ? error.message : '归档 JSON 无法解析为快照承诺。',
+    ));
+  }
+
+  if (archivedCommitment) {
+    const proofCommitmentMatches = Boolean(proof.snapshotCommitment)
+      && commitmentFieldsMatch(archivedCommitment, proof.snapshotCommitment!);
+    const metadataCommitmentMatches = same(archivedCommitment.commitmentHash, archive.commitmentHash);
+    const bindingMatches = proofCommitmentMatches && metadataCommitmentMatches;
+    checks.push(check(
+      'archive-json-commitment',
+      '归档 JSON 承诺内容',
+      proofCommitmentMatches,
+      proofCommitmentMatches
+        ? '归档 JSON 的快照承诺字段与 Proof 一致。'
+        : '归档 JSON 的快照承诺字段与 Proof 不一致。',
+    ));
+    checks.push(check(
+      'archive-binding',
+      '归档元数据绑定',
+      bindingMatches,
+      bindingMatches
+        ? '归档登记的 commitmentHash、归档 JSON 和 Proof 三者一致。'
+        : '归档登记的 commitmentHash 未同时匹配归档 JSON 和 Proof。',
+    ));
+  }
+
+  checks.push(check(
+    'rfc3161-signature',
+    'RFC 3161 签名与证书链',
+    receiptHashMatches,
+    receiptHashMatches
+      ? 'TSR 文件摘要一致；当前浏览器版本尚未解析 CMS/ASN.1、验证 TSA 签名及证书链，请用 OpenSSL 或可信客户端完成该独立检查。'
+      : 'TSR 文件摘要不一致，不能继续信任该 RFC 3161 receipt。',
+    receiptHashMatches,
+  ));
+
+  return { checks, ok: checks.every((item) => item.ok) };
+}
+
+export async function verifyProofIntegrity(proof: CampaignProof): Promise<IntegrityVerificationResult> {
+  const checks: CheckResult[] = [];
 
   try {
     assertNoSensitiveData(proof);
@@ -87,26 +174,16 @@ export async function verifyProofIntegrity(
     checks.push(check('privacy', '公开证明不含敏感字段', false, error instanceof Error ? error.message : '发现敏感字段。'));
   }
 
-  if (proof.proofHash) {
-    const calculatedProofHash = await hashPublicProof(proof as unknown as Record<string, unknown>);
-    const proofHashMatches = same(calculatedProofHash, proof.proofHash);
-    checks.push(check(
-      'proof-hash',
-      '公开 proof 哈希',
-      proofHashMatches,
-      proofHashMatches
-        ? `整份 proof 的 ${proof.proofHashAlgorithm} 哈希一致。`
-        : '整份 proof 被修改，或 proofHash 与内容不一致。',
-    ));
-  } else {
-    checks.push(check(
-      'proof-hash',
-      '公开 proof 哈希',
-      true,
-      'legacy proof 未声明 proofHash；仍会继续验证其内部字段。',
-      true,
-    ));
-  }
+  const calculatedProofHash = await hashPublicProof(proof as unknown as Record<string, unknown>);
+  const proofHashMatches = same(calculatedProofHash, proof.proofHash);
+  checks.push(check(
+    'proof-hash',
+    '公开 proof 哈希',
+    proofHashMatches,
+    proofHashMatches
+      ? `整份 proof 的 ${proof.proofHashAlgorithm} 哈希一致。`
+      : '整份 proof 被修改，或 proofHash 与内容不一致。',
+  ));
 
   const expectedRulesHash = await hashRules(proof.eligibilityRules);
   const rulesMatch = same(expectedRulesHash, proof.snapshot.rulesHash)
@@ -180,55 +257,29 @@ export async function verifyProofIntegrity(
       : '快照清单、快照哈希、ticketIds 列表或抽奖记录中的 snapshotHash 不一致。',
   ));
 
-  if (proof.snapshotCommitment) {
-    const expectedCommitment = await createSnapshotCommitment({
-      campaignId: proof.id,
-      snapshotHash: proof.snapshot.hash,
-      rulesHash: proof.snapshot.rulesHash,
-      entryCount: proof.snapshot.entryCount,
-      eligibleCount: proof.snapshot.eligibleCount,
-      freeCount: proof.snapshot.freeCount,
-      paidCount: proof.snapshot.paidCount,
-      publishedAt: proof.snapshot.publishedAt,
-      drawAlgorithmVersion: proof.drawAlgorithmVersion,
-      winnerCount: proof.winnerCount,
-      freeWinnerCount: proof.freeWinnerCount,
-      paidWinnerCount: proof.paidWinnerCount,
-    });
-    const internalCommitmentMatches = commitmentFieldsMatch(proof.snapshotCommitment, expectedCommitment);
-    checks.push(check(
-      'snapshot-commitment',
-      '快照预承诺',
-      internalCommitmentMatches,
-      internalCommitmentMatches
-        ? `snapshot commitment ${expectedCommitment.commitmentHash} 与快照一致。`
-        : 'snapshot commitment 与快照元数据不一致。',
-    ));
-    const externalMatches = Boolean(externalCommitment)
-      && commitmentFieldsMatch(externalCommitment!, proof.snapshotCommitment);
-    externalCommitmentMatches = internalCommitmentMatches && externalMatches;
-    checks.push(check(
-      'external-commitment',
-      '第三方快照承诺',
-      externalCommitment ? externalMatches : true,
-      externalCommitment
-        ? (externalMatches
-          ? '外部承诺文档与 proof 的快照承诺一致；本浏览器验证器不解析 RFC 3161 receipt，请按 README 独立验证相邻的 .tsr 文件。'
-          : '外部承诺文档与 proof 的快照承诺不一致。')
-        : '未提供第三方承诺 URL；当前只能证明 proof 内部一致，不能证明外部预先存档。',
-      true,
-    ));
-  } else {
-    checks.push(check(
-      'snapshot-commitment',
-      '快照预承诺',
-      !externalCommitment,
-      externalCommitment
-        ? '外部承诺已提供，但 proof 本身没有 snapshotCommitment 可供比较。'
-        : 'legacy proof 未包含 snapshotCommitment；无法核对独立预承诺。',
-      !externalCommitment,
-    ));
-  }
+  const expectedCommitment = await createSnapshotCommitment({
+    campaignId: proof.id,
+    snapshotHash: proof.snapshot.hash,
+    rulesHash: proof.snapshot.rulesHash,
+    entryCount: proof.snapshot.entryCount,
+    eligibleCount: proof.snapshot.eligibleCount,
+    freeCount: proof.snapshot.freeCount,
+    paidCount: proof.snapshot.paidCount,
+    publishedAt: proof.snapshot.publishedAt,
+    drawAlgorithmVersion: proof.drawAlgorithmVersion,
+    winnerCount: proof.winnerCount,
+    freeWinnerCount: proof.freeWinnerCount,
+    paidWinnerCount: proof.paidWinnerCount,
+  });
+  const internalCommitmentMatches = commitmentFieldsMatch(proof.snapshotCommitment, expectedCommitment);
+  checks.push(check(
+    'snapshot-commitment',
+    '快照预承诺',
+    internalCommitmentMatches,
+    internalCommitmentMatches
+      ? `snapshot commitment ${expectedCommitment.commitmentHash} 与快照一致。`
+      : 'snapshot commitment 与快照元数据不一致。',
+  ));
 
   const snapshotTime = epochMs(proof.snapshot.publishedAt);
   const targetRoundTime = epochMs(proof.drand.targetRoundTime);
@@ -320,6 +371,5 @@ export async function verifyProofIntegrity(
   return {
     checks,
     ok: checks.every((item) => item.ok),
-    externalCommitmentMatches,
   };
 }

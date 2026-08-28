@@ -11,14 +11,16 @@
 - drand chain、round、randomness、signature 是否与公开 proof 一致，并由 drand 客户端在浏览器端验证签名；
 - proof 中是否出现 email、用户标识、电话、订单或支付标识等敏感字段。
 - proof protocol version、整体 `proofHash`、快照计数和 `snapshotCommitment` 是否一致；
+- v2 proof 中登记的归档 JSON/TSR URL、原始字节 SHA-256，以及归档承诺与 proof 是否一致；
 - 快照发布时间是否早于目标 drand round，以及 drand/draw/beacon payload 的字段是否互相一致。
 
 中奖结果只展示公开的 `ticketId` 和 score，验证器不会展示或上传邮箱地址。
 
-当前主站生成的新 proof 声明 `proofVersion: "1"`、
-`proofHashAlgorithm: "sha256-stable-json-v1"` 和 `snapshotCommitment`。
-验证器仍兼容旧的 legacy proof，但会把缺少整体哈希或独立承诺标记为警告。
-若 proof 声明版本，当前只接受 `proofVersion: "1"`，未知版本会直接停止，避免把新协议误当成旧协议验证。
+验证器只接受包含不可变归档登记的 `proofVersion: "2"` proof。它使用
+`proofHashAlgorithm: "sha256-stable-json-v1"` 和 `snapshotCommitment`，并在
+proof 根部携带 `archive`；其中的 JSON/TSR URL 和原始字节 SHA-256 都纳入
+`proofHash`。缺少归档或声明旧/未知版本的 proof 会直接停止，避免把不完整
+的证明误当成当前协议验证。
 
 ## 使用
 
@@ -28,7 +30,7 @@
 https://主站.example/api/campaigns/summer-2025/proof
 ```
 
-也可以通过 `?proof=<URL-encoded-proof-url>` 预填地址，或粘贴完整 JSON。验证过程不会把 proof 发到本验证器的服务器；URL 模式下浏览器只向输入的 proof 地址和公开 drand relay 发起请求。
+也可以通过 `?proof=<URL-encoded-proof-url>` 预填地址，或粘贴完整 JSON。验证过程不会把 proof 发到本验证器的服务器；浏览器只向输入的 proof、公开 drand relay，以及 proof 登记的归档 URL 发起请求。
 
 ### 独立快照承诺
 
@@ -48,20 +50,21 @@ TSA URL。登记记录按 campaign 唯一且不可更新/删除；重复提交�
 目标 drand round 公开前，
 将返回的完整 JSON 原样保存到独立托管位置，例如另一个 Git 仓库的提交、
 不可变对象存储，或与 RFC 3161 `.tsr` receipt 一起发布在 GitHub Pages。抽奖完成后，
-在本页同时填写 proof URL 和该归档 JSON URL；验证器会检查：
+本页只需填写 proof URL；验证器会自动读取 Proof 中登记的 JSON 和 TSR URL。验证器会检查：
 
 1. proof 内部重新计算出的 `snapshotCommitment`；
 2. proof 中的 commitment 与第三方归档 JSON 的字段和 `commitmentHash`；
-3. snapshot publication time 早于 drand 目标 round。
+3. 归档 JSON 和 TSR 的原始字节 SHA-256 与登记值一致；
+4. snapshot publication time 早于 drand 目标 round。
 
-只填写主站当前的 commitment URL，或填写任何内容一致但没有可验证历史时间的 URL，
-会得到“内容一致”结果，但会保留浏览器未验证 receipt/历史发布时间的警告；当前响应
-本身不能证明它在抽奖前已经独立存档。
-第三方站点必须允许浏览器
+主站当前 commitment URL 不再作为验证器输入；只有在活动处于
+`snapshot_committed` 时完成归档登记，Proof 才会携带可自动读取的归档地址。归档站点必须允许浏览器
 跨域读取 JSON（CORS），并且不应在归档文件中加入未经协议定义的敏感字段。
 
-浏览器验证器目前不解析 RFC 3161 的 CMS/ASN.1 receipt。下载归档 JSON 和相邻的
-`.tsr` 后，应使用与归档时相同的受信 TSA CA bundle 独立检查：
+浏览器验证器会自动校验 v2 proof 所指向的归档 JSON/TSR 原始字节摘要，但目前不解析
+RFC 3161 的 CMS/ASN.1 receipt。因此结果仍会明确标记 TSA 签名、证书链和信任根
+尚未在浏览器验证。下载归档 JSON 和相邻的 `.tsr` 后，应使用与归档时相同的受信
+TSA CA bundle 独立检查：
 
 ```bash
 curl --fail --location --output summer-test1.json \
@@ -102,13 +105,14 @@ openssl ts -verify \
 其原始字节后以新的提交补上 `.tsr`，不会重写原 JSON。
 
 归档脚本会在验证完成后、提交前再次读取活动状态，作为并发调度的乐观保护；设置
-`CAMPAIGN_ARCHIVE_ADMIN_TOKEN` 并使用 `--push` 时，脚本会在 verifier 提交推送后
-自动登记归档。未设置令牌时，脚本仍可生成和推送文件，但必须由管理员手动调用登记 API；
+`CAMPAIGN_ARCHIVE_API_KEY` 并使用 `--push` 时，脚本会在 verifier 提交推送后
+自动登记归档。未设置 API key 时，脚本仍可生成和推送文件，但必须由管理员手动调用登记 API；
 没有登记记录，`Schedule Beacon` 会被主站和数据库触发器共同拒绝。
 
 验证器的输入上限是 proof JSON 16 MiB、250,000 个 ticket、JSON 深度 64 层和
-500,000 个节点；第三方 commitment 上限为 256 KiB。proof/commitment 请求分别
-有 10 秒超时，并以流式方式限制响应大小。
+500,000 个节点；归档 JSON 上限为 256 KiB，RFC 3161
+receipt 上限为 2 MiB。proof 和 archive 请求均有 10 秒超时，并以
+流式方式限制响应大小。
 
 主站目前使用受限 CORS。要让浏览器跨域读取 proof，需要把验证器正式域名加入主站的 `ALLOWED_ORIGINS`（或为只读 proof 路由配置等价的公开 CORS）。这不会改变 proof 的内容，也不会授予验证器管理员权限。
 
@@ -190,9 +194,25 @@ score 升序（再按 ticketId）就是中奖顺序。验证器刻意独立实�
 自身的 `proofHash` 字段。固定协议对象拒绝未知字段；未知 `proofVersion` 或
 `proofHashAlgorithm` 会停止验证，而不是静默降级。
 
+协议 v2 的 `archive` 字段格式如下；所有 URL 必须为不含凭据、查询参数或片段的
+HTTPS URL，摘要对应发布到 Pages 的原始字节：
+
+```json
+{
+  "type": "rfc3161",
+  "commitmentHash": "…",
+  "commitmentJsonSha256": "…",
+  "timestampReceiptSha256": "…",
+  "archiveUrl": "https://…/commitments/summer.json",
+  "receiptUrl": "https://…/commitments/summer.tsr",
+  "verifierCommit": "…",
+  "tsaUrl": "https://freetsa.org/tsr"
+}
+```
+
 ## 信任边界
 
-验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，以及输入的外部副本内容一致；它不能仅凭一个 URL 证明外部副本的历史发布时间，也不能在浏览器内验证 RFC 3161 receipt。运营方应公开保存 proof 原文、发布时间、活动规则、原始 commitment JSON 和 `.tsr` 存档凭据；参与者应使用受信 TSA CA bundle 独立验证 receipt，并确认 TSA 时间早于目标 drand round。验证器也不能证明主站在快照发布前没有漏记或错误筛选用户。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
+验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，并在 v2 中自动证明归档 JSON/TSR 原始字节与不可变登记值一致；它不能仅凭一个 URL 证明外部副本的历史发布时间，也不能在浏览器内验证 RFC 3161 CMS/ASN.1 签名与证书链。运营方应公开保存 proof 原文、发布时间、活动规则、原始 commitment JSON 和 `.tsr` 存档凭据；参与者应使用受信 TSA CA bundle 独立验证 receipt，并确认 TSA 时间早于目标 drand round。验证器也不能证明主站在快照发布前没有漏记或错误筛选用户。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
 
 相关协议文档：
 

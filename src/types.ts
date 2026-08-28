@@ -16,6 +16,17 @@ export interface CampaignSnapshot {
   entries?: SegmentedSnapshotEntry[];
 }
 
+export interface CampaignSnapshotArchive {
+  type: 'rfc3161';
+  commitmentHash: string;
+  commitmentJsonSha256: string;
+  timestampReceiptSha256: string;
+  archiveUrl: string;
+  receiptUrl: string;
+  verifierCommit: string;
+  tsaUrl: string;
+}
+
 export interface SnapshotCommitment {
   commitmentVersion: string;
   campaignId: string;
@@ -70,9 +81,9 @@ export interface CampaignDrawProof {
 }
 
 export interface CampaignProof {
-  proofVersion?: string;
-  proofHashAlgorithm?: string;
-  proofHash?: string;
+  proofVersion: string;
+  proofHashAlgorithm: string;
+  proofHash: string;
   id: string;
   slug: string;
   name: string;
@@ -86,7 +97,8 @@ export interface CampaignProof {
   eligibilityRules: Record<string, unknown>;
   drawAlgorithmVersion: string;
   snapshot: CampaignSnapshot;
-  snapshotCommitment?: SnapshotCommitment;
+  snapshotCommitment: SnapshotCommitment;
+  archive: CampaignSnapshotArchive;
   drand: CampaignDrandProof;
   draw: CampaignDrawProof;
 }

@@ -8,15 +8,17 @@ import {
   createSnapshotManifest,
   hashPublicProof,
   hashRules,
+  sha256HexBytes,
   selectSegmentedWinners,
 } from '../src/crypto.ts';
 import {
   MAX_TICKET_COUNT,
   parseProof,
-  parseSnapshotCommitment,
+  parseSnapshotArchive,
   ProofValidationError,
+  SUPPORTED_PROOF_VERSION,
 } from '../src/proof-schema.ts';
-import { verifyProofIntegrity } from '../src/verify.ts';
+import { verifyProofIntegrity, verifySnapshotArchive } from '../src/verify.ts';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/valid-proof.json', import.meta.url), 'utf8')) as Record<string, unknown>;
 
@@ -33,30 +35,6 @@ test('verifies the published protocol test vector', async () => {
   assert.equal(proof.snapshot.hash, '1750d274ef6faa7cdc0ae069f996ac02d154322025e38e197e6ddffdfbb073ae');
   assert.deepEqual(proof.draw.winners.map((winner) => winner.ticketId), ['ticket-b', 'ticket-c']);
   assert.ok(result.checks.every((check) => check.ok));
-  assert.equal(result.externalCommitmentMatches, false);
-  assert.equal(result.checks.find((check) => check.id === 'external-commitment')?.warning, true);
-});
-
-test('accepts an independently archived snapshot commitment', async () => {
-  const proof = parseProof(fixture);
-  const commitment = parseSnapshotCommitment(fixture.snapshotCommitment);
-  const result = await verifyProofIntegrity(proof, commitment);
-
-  assert.equal(result.ok, true);
-  assert.equal(result.externalCommitmentMatches, true);
-  assert.equal(result.checks.find((check) => check.id === 'external-commitment')?.ok, true);
-  assert.equal(result.checks.find((check) => check.id === 'external-commitment')?.warning, true);
-});
-
-test('rejects an archived commitment that differs from the proof', async () => {
-  const proof = parseProof(fixture);
-  const commitment = parseSnapshotCommitment(fixture.snapshotCommitment);
-  commitment.entryCount += 1;
-  const result = await verifyProofIntegrity(proof, commitment);
-
-  assert.equal(result.ok, false);
-  assert.equal(result.externalCommitmentMatches, false);
-  assert.equal(result.checks.find((check) => check.id === 'external-commitment')?.ok, false);
 });
 
 test('detects a modified proof hash and a snapshot published after the Beacon round', async () => {
@@ -80,7 +58,7 @@ test('rejects proofs above the ticket count limit before hashing them', () => {
   assert.throws(() => parseProof(tampered), ProofValidationError);
 });
 
-test('requires the production completed status for protocol v1 proofs', () => {
+test('requires the production completed status for protocol v2 proofs', () => {
   const tampered = cloneFixture();
   tampered.status = 'completed';
 
@@ -125,9 +103,91 @@ test('rejects proof data containing an email field', () => {
 
 test('does not silently verify an unknown proof version', () => {
   const tampered = cloneFixture();
-  tampered.proofVersion = '2';
+  tampered.proofVersion = '1';
 
   assert.throws(() => parseProof(tampered), ProofValidationError);
+});
+
+test('parses and verifies an archived protocol v2 proof without trusting reserialized JSON', async () => {
+  const commitmentBytes = new TextEncoder().encode(`${JSON.stringify(fixture.snapshotCommitment, null, 2)}\n`);
+  const receiptBytes = Uint8Array.from([0x30, 0x03, 0x02, 0x01, 0x00]);
+  const proofData = cloneFixture();
+  proofData.proofVersion = SUPPORTED_PROOF_VERSION;
+  proofData.archive = {
+    type: 'rfc3161',
+    commitmentHash: (fixture.snapshotCommitment as Record<string, unknown>).commitmentHash,
+    commitmentJsonSha256: await sha256HexBytes(commitmentBytes),
+    timestampReceiptSha256: await sha256HexBytes(receiptBytes),
+    archiveUrl: 'https://verifier.example/commitments/summer-2025.json',
+    receiptUrl: 'https://verifier.example/commitments/summer-2025.tsr',
+    verifierCommit: '1'.repeat(40),
+    tsaUrl: 'https://freetsa.org/tsr',
+  };
+  proofData.proofHash = await hashPublicProof(proofData);
+
+  const proof = parseProof(proofData);
+  const archive = parseSnapshotArchive(proof.archive);
+  const result = await verifySnapshotArchive(proof, archive, commitmentBytes, receiptBytes);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.checks.find((check) => check.id === 'archive-json-sha256')?.ok, true);
+  assert.equal(result.checks.find((check) => check.id === 'archive-receipt-sha256')?.ok, true);
+  assert.equal(result.checks.find((check) => check.id === 'archive-binding')?.ok, true);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-signature')?.warning, true);
+});
+
+test('detects changes to the original archive JSON or detached receipt bytes', async () => {
+  const commitmentBytes = new TextEncoder().encode(JSON.stringify(fixture.snapshotCommitment));
+  const receiptBytes = Uint8Array.from([0x30, 0x03, 0x02, 0x01, 0x00]);
+  const proofData = cloneFixture();
+  proofData.proofVersion = SUPPORTED_PROOF_VERSION;
+  proofData.archive = {
+    type: 'rfc3161',
+    commitmentHash: (fixture.snapshotCommitment as Record<string, unknown>).commitmentHash,
+    commitmentJsonSha256: await sha256HexBytes(commitmentBytes),
+    timestampReceiptSha256: await sha256HexBytes(receiptBytes),
+    archiveUrl: 'https://verifier.example/commitments/summer-2025.json',
+    receiptUrl: 'https://verifier.example/commitments/summer-2025.tsr',
+    verifierCommit: '1'.repeat(40),
+    tsaUrl: 'https://freetsa.org/tsr',
+  };
+  proofData.proofHash = await hashPublicProof(proofData);
+  const proof = parseProof(proofData);
+  const archive = parseSnapshotArchive(proof.archive);
+
+  const modifiedJson = new TextEncoder().encode(`${JSON.stringify(fixture.snapshotCommitment)}\n`);
+  const modifiedReceipt = new Uint8Array(receiptBytes);
+  modifiedReceipt[modifiedReceipt.length - 1] ^= 0x01;
+  const result = await verifySnapshotArchive(proof, archive, modifiedJson, modifiedReceipt);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.find((check) => check.id === 'archive-json-sha256')?.ok, false);
+  assert.equal(result.checks.find((check) => check.id === 'archive-receipt-sha256')?.ok, false);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-signature')?.ok, false);
+});
+
+test('requires protocol v2 archive metadata and rejects unsafe archive URLs', () => {
+  const missingArchive = cloneFixture();
+  delete missingArchive.archive;
+  assert.throws(() => parseProof(missingArchive), /proof\.archive is required/);
+
+  const oldVersion = cloneFixture();
+  oldVersion.proofVersion = '1';
+  assert.throws(() => parseProof(oldVersion), /unsupported proof version/);
+
+  const unsafe = cloneFixture();
+  unsafe.proofVersion = SUPPORTED_PROOF_VERSION;
+  unsafe.archive = {
+    type: 'rfc3161',
+    commitmentHash: (fixture.snapshotCommitment as Record<string, unknown>).commitmentHash,
+    commitmentJsonSha256: 'a'.repeat(64),
+    timestampReceiptSha256: 'b'.repeat(64),
+    archiveUrl: 'https://verifier.example/commitments/summer-2025.json?cache=1',
+    receiptUrl: 'https://verifier.example/commitments/summer-2025.tsr',
+    verifierCommit: '1'.repeat(40),
+    tsaUrl: 'https://freetsa.org/tsr',
+  };
+  assert.throws(() => parseProof(unsafe), /archiveUrl must be an HTTPS URL/);
 });
 
 test('rejects unknown protocol fields instead of excluding them from proofHash', () => {
@@ -207,7 +267,7 @@ test('verifies a segmented proof (campaign-drand-segmented-v1 & campaign-snapsho
   const winners = await selectSegmentedWinners(entries, { freeWinnerCount, paidWinnerCount }, drawSeed);
 
   const proofData: Record<string, unknown> = {
-    proofVersion: '1',
+    proofVersion: SUPPORTED_PROOF_VERSION,
     proofHashAlgorithm: 'sha256-stable-json-v1',
     id: campaignId,
     slug: 'segmented-campaign',
@@ -265,6 +325,16 @@ test('verifies a segmented proof (campaign-drand-segmented-v1 & campaign-snapsho
       },
     },
   };
+  proofData.archive = {
+    type: 'rfc3161',
+    commitmentHash: snapshotCommitment.commitmentHash,
+    commitmentJsonSha256: 'a'.repeat(64),
+    timestampReceiptSha256: 'b'.repeat(64),
+    archiveUrl: 'https://verifier.example/commitments/segmented.json',
+    receiptUrl: 'https://verifier.example/commitments/segmented.tsr',
+    verifierCommit: '1'.repeat(40),
+    tsaUrl: 'https://freetsa.org/tsr',
+  };
   proofData.proofHash = await hashPublicProof(proofData);
 
   const parsed = parseProof(proofData);
@@ -280,7 +350,7 @@ test('verifies a segmented proof (campaign-drand-segmented-v1 & campaign-snapsho
 
 test('rejects a segmented proof with mismatched winner quota sum', async () => {
   const proofData: Record<string, unknown> = {
-    proofVersion: '1',
+    proofVersion: SUPPORTED_PROOF_VERSION,
     proofHashAlgorithm: 'sha256-stable-json-v1',
     id: 'segmented-bad-quota',
     slug: 'bad-quota',
@@ -328,5 +398,16 @@ test('rejects a segmented proof with mismatched winner quota sum', async () => {
       winners: [],
     },
   };
+  proofData.archive = {
+    type: 'rfc3161',
+    commitmentHash: 'a'.repeat(64),
+    commitmentJsonSha256: 'b'.repeat(64),
+    timestampReceiptSha256: 'c'.repeat(64),
+    archiveUrl: 'https://verifier.example/commitments/segmented-bad.json',
+    receiptUrl: 'https://verifier.example/commitments/segmented-bad.tsr',
+    verifierCommit: '1'.repeat(40),
+    tsaUrl: 'https://freetsa.org/tsr',
+  };
+  proofData.proofHash = await hashPublicProof(proofData);
   assert.throws(() => parseProof(proofData), ProofValidationError);
 });

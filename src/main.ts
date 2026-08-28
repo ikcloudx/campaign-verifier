@@ -1,9 +1,15 @@
 import './style.css';
 import { verifyDrandBeacon } from './drand.ts';
-import { MAX_PROOF_JSON_BYTES, parseProof, parseSnapshotCommitment, ProofValidationError } from './proof-schema.ts';
-import type { CampaignProof, SnapshotCommitment } from './types.ts';
-import type { CheckResult, IntegrityVerificationResult } from './verify.ts';
-import { verifyProofIntegrity } from './verify.ts';
+import {
+  MAX_ARCHIVE_JSON_BYTES,
+  MAX_ARCHIVE_RECEIPT_BYTES,
+  MAX_PROOF_JSON_BYTES,
+  parseProof,
+  ProofValidationError,
+} from './proof-schema.ts';
+import type { CampaignProof } from './types.ts';
+import type { ArchiveVerificationResult, CheckResult, IntegrityVerificationResult } from './verify.ts';
+import { verifyProofIntegrity, verifySnapshotArchive } from './verify.ts';
 
 const app = document.querySelector<HTMLElement>('#app');
 if (!app) throw new Error('Missing application root');
@@ -24,10 +30,7 @@ app.innerHTML = `
         <button type="submit" id="verify-button">开始验证</button>
       </div>
       <p class="hint">也可以直接粘贴 proof JSON；所有哈希和中奖排序均在本浏览器执行。</p>
-      <label for="commitment-url">第三方快照承诺 URL（可选）</label>
-      <input id="commitment-url" name="commitment-url" type="url" inputmode="url" autocomplete="off"
-        placeholder="https://独立站.example/commitments/summer-2026.json" />
-      <p class="hint">主站冻结后可将 <code>/api/campaigns/&lt;slug&gt;/commitment</code> 保存到独立站，再填入此处核对；若归档包含 RFC 3161 <code>.tsr</code>，请按 README 用 OpenSSL 独立验证。</p>
+      <p class="hint">验证器只接受包含不可变归档的 protocol v2 proof，会自动读取归档 JSON 和 RFC 3161 <code>.tsr</code>。浏览器会校验原始字节摘要，完整 TSA 签名/证书链仍需独立客户端确认。</p>
       <label for="proof-json">Proof JSON（可选）</label>
       <textarea id="proof-json" name="proof-json" rows="7" spellcheck="false"
         placeholder="{\n  &quot;slug&quot;: &quot;...&quot;\n}"></textarea>
@@ -61,7 +64,6 @@ app.innerHTML = `
 const form = document.querySelector<HTMLFormElement>('#proof-form')!;
 const proofUrlInput = document.querySelector<HTMLInputElement>('#proof-url')!;
 const proofJsonInput = document.querySelector<HTMLTextAreaElement>('#proof-json')!;
-const commitmentUrlInput = document.querySelector<HTMLInputElement>('#commitment-url')!;
 const verifyButton = document.querySelector<HTMLButtonElement>('#verify-button')!;
 const notice = document.querySelector<HTMLElement>('#notice')!;
 const resultPanel = document.querySelector<HTMLElement>('#result-panel')!;
@@ -71,15 +73,13 @@ const checksList = document.querySelector<HTMLElement>('#checks')!;
 const winnersList = document.querySelector<HTMLOListElement>('#winners')!;
 const winnerNote = document.querySelector<HTMLElement>('#winner-note')!;
 
-if (!form || !proofUrlInput || !proofJsonInput || !commitmentUrlInput || !verifyButton || !notice || !resultPanel
+if (!form || !proofUrlInput || !proofJsonInput || !verifyButton || !notice || !resultPanel
   || !overallBadge || !campaignSummary || !checksList || !winnersList || !winnerNote) {
   throw new Error('Verifier UI is incomplete');
 }
 
 const queryProof = new URLSearchParams(window.location.search).get('proof');
 if (queryProof) proofUrlInput.value = queryProof;
-const queryCommitment = new URLSearchParams(window.location.search).get('commitment');
-if (queryCommitment) commitmentUrlInput.value = queryCommitment;
 
 function setNotice(message: string, kind: 'info' | 'error' | 'warning' = 'info'): void {
   notice.textContent = message;
@@ -106,12 +106,10 @@ function renderSummary(proof: CampaignProof): void {
   appendSummaryRow('候选票据', `${proof.snapshot.ticketIds.length}（免费 ${proof.snapshot.freeCount}，付费 ${proof.snapshot.paidCount}）`);
   appendSummaryRow('目标轮次', `${proof.drand.beaconId} · ${proof.drand.targetRound}`);
   appendSummaryRow('算法', proof.drawAlgorithmVersion);
-  if (proof.snapshotCommitment) {
-    appendSummaryRow('快照承诺', proof.snapshotCommitment.commitmentHash);
-  }
-  if (!proof.proofVersion) {
-    appendSummaryRow('协议提示', '该 proof 未声明 proofVersion，按当前 campaign-drand-v1 兼容格式验证。');
-  }
+  appendSummaryRow('快照承诺', proof.snapshotCommitment.commitmentHash);
+  appendSummaryRow('归档 JSON', proof.archive.archiveUrl);
+  appendSummaryRow('RFC 3161 receipt', proof.archive.receiptUrl);
+  appendSummaryRow('协议提示', '归档元数据已纳入 proofHash；浏览器会自动校验 JSON/TSR 原始字节摘要。');
 }
 
 function renderChecks(checks: CheckResult[]): void {
@@ -150,8 +148,13 @@ function renderWinners(proof: CampaignProof): void {
     : '该 proof 没有公开中奖票据。';
 }
 
-function renderResult(proof: CampaignProof, integrity: IntegrityVerificationResult, drand: CheckResult): void {
-  const checks = [...integrity.checks, drand];
+function renderResult(
+  proof: CampaignProof,
+  integrity: IntegrityVerificationResult,
+  drand: CheckResult,
+  archive: ArchiveVerificationResult,
+): void {
+  const checks = [...integrity.checks, ...archive.checks, drand];
   const ok = checks.every((item) => item.ok);
   const hasWarnings = checks.some((item) => item.warning);
   resultPanel.hidden = false;
@@ -205,6 +208,38 @@ async function readResponseText(response: Response, maxBytes: number, label: str
   return chunks.join('');
 }
 
+async function readResponseBytes(response: Response, maxBytes: number, label: string): Promise<Uint8Array> {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new Error(`${label} 超过 ${Math.floor(maxBytes / 1024)} KiB 限制。`);
+  }
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxBytes) throw new Error(`${label} 超过大小限制。`);
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytesRead = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytesRead += value.byteLength;
+    if (bytesRead > maxBytes) {
+      await reader.cancel();
+      throw new Error(`${label} 超过大小限制。`);
+    }
+    chunks.push(value);
+  }
+  const result = new Uint8Array(bytesRead);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
 async function fetchJson(url: string, label: string, maxBytes = MAX_PROOF_JSON_BYTES): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
@@ -217,6 +252,23 @@ async function fetchJson(url: string, label: string, maxBytes = MAX_PROOF_JSON_B
     } catch {
       throw new Error(`${label} 不是有效的 JSON。`);
     }
+  } catch (error) {
+    if (error && typeof error === 'object' && 'name' in error && error.name === 'AbortError') {
+      throw new Error(`${label} 请求超时。`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBytes(url: string, label: string, maxBytes: number): Promise<Uint8Array> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(url, { credentials: 'omit', signal: controller.signal });
+    if (!response.ok) throw new Error(`${label} 请求失败（HTTP ${response.status}）。`);
+    return await readResponseBytes(response, maxBytes, label);
   } catch (error) {
     if (error && typeof error === 'object' && 'name' in error && error.name === 'AbortError') {
       throw new Error(`${label} 请求超时。`);
@@ -244,14 +296,15 @@ async function readProof(): Promise<unknown> {
   return fetchJson(httpUrl(rawUrl, 'Proof URL'), 'Proof');
 }
 
-async function readExternalCommitment(): Promise<SnapshotCommitment | undefined> {
-  const rawUrl = commitmentUrlInput.value.trim();
-  if (!rawUrl) return undefined;
-  return parseSnapshotCommitment(await fetchJson(
-    httpUrl(rawUrl, '第三方承诺 URL'),
-    '第三方承诺',
-    256 * 1024,
-  ), 'externalCommitment');
+async function readSnapshotArchive(proof: CampaignProof): Promise<{
+  commitmentBytes: Uint8Array;
+  receiptBytes: Uint8Array;
+}> {
+  const [commitmentBytes, receiptBytes] = await Promise.all([
+    fetchBytes(proof.archive.archiveUrl, '归档 JSON', MAX_ARCHIVE_JSON_BYTES),
+    fetchBytes(proof.archive.receiptUrl, 'RFC 3161 receipt', MAX_ARCHIVE_RECEIPT_BYTES),
+  ]);
+  return { commitmentBytes, receiptBytes };
 }
 
 async function verify(): Promise<void> {
@@ -259,16 +312,22 @@ async function verify(): Promise<void> {
   setNotice('正在读取公开证明并在本地复算…');
   try {
     const proof = parseProof(await readProof());
-    const integrity = await verifyProofIntegrity(proof, await readExternalCommitment());
+    const integrity = await verifyProofIntegrity(proof);
+    const archive = await readSnapshotArchive(proof);
+    const archiveVerification = await verifySnapshotArchive(
+      proof,
+      proof.archive,
+      archive.commitmentBytes,
+      archive.receiptBytes,
+    );
     const drand = await verifyDrandBeacon(proof);
-    renderResult(proof, integrity, drand);
-    const ok = [...integrity.checks, drand].every((item) => item.ok);
-    const warning = checksHaveWarnings(integrity, drand);
+    renderResult(proof, integrity, drand, archiveVerification);
+    const checks = [...integrity.checks, ...archiveVerification.checks, drand];
+    const ok = checks.every((item) => item.ok);
+    const warning = checksHaveWarnings(checks);
     setNotice(ok
       ? (warning
-        ? (integrity.externalCommitmentMatches
-          ? '验证完成，但 RFC 3161 receipt 未在浏览器内验证；请按 README 独立检查 .tsr。'
-          : '验证完成，但存在 legacy proof 或其他警告；请查看检查项。')
+        ? '验证完成：归档 JSON 和 TSR 摘要一致，但 RFC 3161 签名/证书链未在浏览器内解析；请用可信客户端独立确认。'
         : '验证完成：公开证明、候选快照、中奖顺序和 drand Beacon 均一致。')
       : '验证完成：至少有一项检查未通过，请不要把该结果当作可信抽奖结果。', ok ? 'info' : 'error');
   } catch (error) {
@@ -282,8 +341,8 @@ async function verify(): Promise<void> {
   }
 }
 
-function checksHaveWarnings(integrity: IntegrityVerificationResult, drand: CheckResult): boolean {
-  return [...integrity.checks, drand].some((item) => item.warning);
+function checksHaveWarnings(checks: CheckResult[]): boolean {
+  return checks.some((item) => item.warning);
 }
 
 form.addEventListener('submit', (event) => {
