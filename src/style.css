@@ -74,9 +74,6 @@ button:disabled { cursor: wait; opacity: .65; }
 .summary dt, .summary dd { border-bottom: 1px solid #edf0f5; margin: 0; padding: .55rem 0; }
 .summary dt { color: #66758a; font-size: .84rem; }
 .summary dd { font-weight: 650; overflow-wrap: anywhere; }
-.version-note { background: #fff8df; border: 1px solid #f0d48a; border-radius: 12px; color: #79530b; margin: -0.4rem 0 1.25rem; padding: .7rem .8rem; }
-.version-note a { color: #684705; font-weight: 750; overflow-wrap: anywhere; }
-
 .checks, .winners { list-style: none; margin: 0 0 1.5rem; padding: 0; }
 .check { align-items: flex-start; border: 1px solid #e6eaf1; border-radius: 12px; display: flex; gap: .7rem; margin-bottom: .55rem; padding: .7rem .8rem; }
 .check-icon { align-items: center; border-radius: 50%; display: inline-flex; flex: 0 0 1.4rem; font-weight: 900; height: 1.4rem; justify-content: center; }
@@ -113,10 +110,6 @@ button:disabled { cursor: wait; opacity: .65; }
 .winners small { color: #66758a; flex: 0 1 52%; font-size: .72rem; max-width: 52%; min-width: 0; overflow-wrap: anywhere; text-align: right; }
 .footer { align-items: center; display: flex; flex-wrap: wrap; gap: .75rem 1rem; justify-content: space-between; padding: 0 .2rem; }
 .footer p { margin-bottom: 0; }
-.build-info { color: #66758a; flex: 1 1 auto; font-size: .78rem; min-width: 0; overflow-wrap: anywhere; }
-.build-info code { font-size: .9em; }
-.build-info a { color: inherit; }
-.build-info a:hover { color: #24458f; }
 .source-link { align-items: center; color: #4663aa; display: inline-flex; flex: 0 0 auto; font-size: .84rem; font-weight: 750; gap: .4rem; text-decoration: none; }
 .source-link:hover { color: #24458f; text-decoration: underline; }
 .source-link:focus-visible { border-radius: 6px; box-shadow: 0 0 0 3px rgb(70 99 170 / 17%); outline: none; }

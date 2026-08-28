@@ -39,12 +39,7 @@ jobs:
         run: npm ci
       - name: Run tests
         run: npm test
-      - name: Capture checked-out verifier commit
-        id: verifier
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Build static site
-        env:
-          VITE_VERIFIER_COMMIT: ${{ steps.verifier.outputs.sha }}
         run: npm run build
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
