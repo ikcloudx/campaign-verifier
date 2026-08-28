@@ -12,8 +12,10 @@ import type { ArchiveVerificationResult, CheckResult, IntegrityVerificationResul
 import { verifyProofIntegrity, verifySnapshotArchive } from './verify.ts';
 import {
   FREETSA_CRL_MIRROR_PATH,
+  FREETSA_OCSP_PROXY_URL,
   FREETSA_TSA_URL,
   MAX_REVOCATION_CRL_BYTES,
+  MAX_REVOCATION_OCSP_BYTES,
 } from './revocation-config.ts';
 
 const app = document.querySelector<HTMLElement>('#app');
@@ -35,7 +37,7 @@ app.innerHTML = `
         <button type="submit" id="verify-button">开始验证</button>
       </div>
       <p class="hint">也可以直接粘贴 proof JSON；所有哈希和中奖排序均在本浏览器执行。</p>
-      <p class="hint">验证器只接受包含不可变归档的 protocol v2 proof，会自动读取归档 JSON、RFC 3161 <code>.tsr</code> 和本站同源镜像的 FreeTSA CRL。浏览器会解析 CMS/ASN.1，验证 TSA 签名、固定信任根、证书用途和 CRL 签名/有效期/序列号；MessageImprint 仅接受 SHA-256/384/512。</p>
+      <p class="hint">验证器只接受包含不可变归档的 protocol v2 proof，会自动读取归档 JSON、RFC 3161 <code>.tsr</code>、配置的 HTTPS OCSP 代理和本站同源镜像的 FreeTSA CRL。浏览器会解析 CMS/ASN.1，验证 TSA 签名、固定信任根、证书用途和 OCSP/CRL 签名、有效期、序列号；MessageImprint 仅接受 SHA-256/384/512。</p>
       <label for="proof-json">Proof JSON（可选）</label>
       <textarea id="proof-json" name="proof-json" rows="7" spellcheck="false"
         placeholder="{\n  &quot;slug&quot;: &quot;...&quot;\n}"></textarea>
@@ -114,7 +116,7 @@ function renderSummary(proof: CampaignProof): void {
   appendSummaryRow('快照承诺', proof.snapshotCommitment.commitmentHash);
   appendSummaryRow('归档 JSON', proof.archive.archiveUrl);
   appendSummaryRow('RFC 3161 receipt', proof.archive.receiptUrl);
-  appendSummaryRow('协议提示', '归档元数据已纳入 proofHash；浏览器会校验 JSON/TSR 原始字节摘要，并在本地解析和验证 RFC 3161 签名、证书链及同源 CRL 吊销状态。');
+  appendSummaryRow('协议提示', '归档元数据已纳入 proofHash；浏览器会校验 JSON/TSR 原始字节摘要，并在本地解析和验证 RFC 3161 签名、证书链及 OCSP/同源 CRL 吊销状态。');
 }
 
 function renderChecks(checks: CheckResult[]): void {
@@ -284,6 +286,42 @@ async function fetchBytes(url: string, label: string, maxBytes: number, cache: R
   }
 }
 
+async function fetchOcspResponse(url: string, requestBytes: Uint8Array): Promise<Uint8Array> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const parsedUrl = new URL(url, document.baseURI);
+    if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+      throw new Error('OCSP 代理 URL 必须是无凭据、无查询参数和片段的 HTTPS URL。');
+    }
+    const requestBuffer = requestBytes.buffer.slice(
+      requestBytes.byteOffset,
+      requestBytes.byteOffset + requestBytes.byteLength,
+    ) as ArrayBuffer;
+    const response = await fetch(url, {
+      method: 'POST',
+      credentials: 'omit',
+      cache: 'no-store',
+      redirect: 'error',
+      headers: {
+        Accept: 'application/ocsp-response',
+        'Content-Type': 'application/ocsp-request',
+      },
+      body: requestBuffer,
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`OCSP 代理请求失败（HTTP ${response.status}）。`);
+    return await readResponseBytes(response, MAX_REVOCATION_OCSP_BYTES, 'OCSP 响应');
+  } catch (error) {
+    if (error && typeof error === 'object' && 'name' in error && error.name === 'AbortError') {
+      throw new Error('OCSP 代理请求超时。');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function readProof(): Promise<unknown> {
   const pasted = proofJsonInput.value.trim();
   if (pasted) {
@@ -337,7 +375,15 @@ async function verify(): Promise<void> {
       proof.archive,
       archive.commitmentBytes,
       archive.receiptBytes,
-      { rfc3161: { revocationCrlBytes, revocationError } },
+      {
+        rfc3161: {
+          revocationCrlBytes,
+          revocationError,
+          revocationOcspFetcher: proof.archive.tsaUrl === FREETSA_TSA_URL && FREETSA_OCSP_PROXY_URL
+            ? (requestBytes) => fetchOcspResponse(FREETSA_OCSP_PROXY_URL, requestBytes)
+            : undefined,
+        },
+      },
     );
     const drand = await verifyDrandBeacon(proof);
     renderResult(proof, integrity, drand, archiveVerification);

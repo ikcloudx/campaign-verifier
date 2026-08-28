@@ -10,6 +10,7 @@ import {
   TSTInfo,
 } from 'pkijs';
 import { FREETSA_TSA_URL } from './revocation-config.ts';
+import { createOcspRequest, verifyCertificateWithOcsp } from './ocsp.ts';
 import { verifyCertificateWithCrl } from './revocation.ts';
 
 export { FREETSA_TSA_URL } from './revocation-config.ts';
@@ -35,6 +36,13 @@ export interface Rfc3161VerificationOptions {
   revocationCrlBytes?: Uint8Array;
   /** A fetch/transport error is rendered as a failed revocation check. */
   revocationError?: string;
+  /**
+   * Optional browser-side OCSP transport. The callback receives a DER request
+   * and must return the raw DER OCSPResponse; it must not return a boolean.
+   */
+  revocationOcspFetcher?: (requestBytes: Uint8Array, nonce: Uint8Array) => Promise<Uint8Array>;
+  /** Injectable nonce for deterministic tests; production leaves it unset. */
+  revocationOcspNonce?: Uint8Array;
   /** Injectable for deterministic tests; production uses the current time. */
   revocationCheckDate?: Date;
 }
@@ -578,7 +586,84 @@ export async function verifyRfc3161Receipt(
     tsaIdentityOk ? 'TSTInfo 的 TSA 名称与签名证书主体一致。' : 'TSTInfo 的 TSA 名称与签名证书主体不一致。',
   ));
 
-  if (options.revocationCrlBytes && signerCertificate) {
+  let ocspAttempted = false;
+  let ocspResult: Awaited<ReturnType<typeof verifyCertificateWithOcsp>> | undefined;
+  let ocspFailure: string | undefined;
+  if (
+    options.revocationOcspFetcher
+    && signerCertificate
+    && chainResult?.signerCertificateVerified === true
+  ) {
+    ocspAttempted = true;
+    try {
+      const request = await createOcspRequest(
+        signerCertificate,
+        rootCertificate,
+        options.revocationOcspNonce,
+      );
+      const responseBytes = await options.revocationOcspFetcher(request.requestBytes, request.nonce);
+      ocspResult = await verifyCertificateWithOcsp(
+        responseBytes,
+        signerCertificate,
+        rootCertificate,
+        {
+          checkDate: options.revocationCheckDate,
+          expectedNonce: request.nonce,
+        },
+      );
+    } catch (error) {
+      ocspFailure = error instanceof Error ? error.message : 'OCSP 请求失败。';
+    }
+  }
+
+  if (ocspResult?.ok) {
+    checks.push(check(
+      'rfc3161-revocation',
+      'TSA 吊销状态（OCSP）',
+      true,
+      ocspResult.detail,
+    ));
+  } else if (ocspResult?.status === 'revoked') {
+    checks.push(check(
+      'rfc3161-revocation',
+      'TSA 吊销状态（OCSP）',
+      false,
+      ocspResult.detail,
+    ));
+  } else if (ocspAttempted && options.revocationCrlBytes && signerCertificate) {
+    const revocation = await verifyCertificateWithCrl(
+      options.revocationCrlBytes,
+      signerCertificate,
+      rootCertificate,
+      { checkDate: options.revocationCheckDate },
+    );
+    const ocspDetail = ocspResult?.detail || ocspFailure || 'OCSP 未返回有效响应。';
+    checks.push(check(
+      'rfc3161-revocation',
+      'TSA 吊销状态（CRL 回退）',
+      revocation.ok,
+      revocation.ok
+        ? `${ocspDetail}；已使用 CRL 镜像回退，${revocation.detail}`
+        : `${ocspDetail}；CRL 回退失败：${revocation.detail}`,
+      revocation.ok,
+    ));
+  } else if (ocspAttempted && options.revocationError) {
+    const ocspDetail = ocspResult?.detail || ocspFailure || 'OCSP 未返回有效响应。';
+    checks.push(check(
+      'rfc3161-revocation',
+      'TSA 吊销状态（OCSP/CRL）',
+      false,
+      `${ocspDetail}；无法读取同源 CRL：${options.revocationError}`,
+    ));
+  } else if (ocspAttempted) {
+    const ocspDetail = ocspResult?.detail || ocspFailure || 'OCSP 未返回有效响应。';
+    checks.push(check(
+      'rfc3161-revocation',
+      'TSA 吊销状态（OCSP）',
+      false,
+      `${ocspDetail}；未提供可用的 CRL 回退。`,
+    ));
+  } else if (options.revocationCrlBytes && signerCertificate) {
     const revocation = await verifyCertificateWithCrl(
       options.revocationCrlBytes,
       signerCertificate,

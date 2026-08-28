@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import * as asn1js from 'asn1js';
-import { GeneralName, SignedData, TimeStampResp, TSTInfo } from 'pkijs';
+import { Certificate, GeneralName, OCSPRequest, SignedData, TimeStampResp, TSTInfo } from 'pkijs';
 import {
   createDrawSeed,
   createSegmentedSnapshotManifest,
@@ -22,6 +22,7 @@ import {
 } from '../src/proof-schema.ts';
 import { verifyProofIntegrity, verifySnapshotArchive } from '../src/verify.ts';
 import { MAX_RFC3161_RECEIPT_BYTES, verifyRfc3161Receipt } from '../src/rfc3161.ts';
+import { createOcspRequest, verifyCertificateWithOcsp } from '../src/ocsp.ts';
 import { MAX_REVOCATION_CRL_BYTES } from '../src/revocation-config.ts';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/valid-proof.json', import.meta.url), 'utf8')) as Record<string, unknown>;
@@ -32,6 +33,23 @@ function cloneFixture(): Record<string, unknown> {
 
 function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function readTsaCertificates(receiptBytes: Uint8Array): [Certificate, Certificate] {
+  const decoded = asn1js.fromBER(exactArrayBuffer(receiptBytes));
+  assert.equal(decoded.offset, receiptBytes.byteLength);
+  const response = new TimeStampResp({ schema: decoded.result });
+  assert.ok(response.timeStampToken);
+  const signedData = new SignedData({ schema: response.timeStampToken.content });
+  const certificates = (signedData.certificates || [])
+    .filter((certificate): certificate is Certificate => certificate instanceof Certificate);
+  assert.equal(certificates.length, 2);
+  return [certificates[0], certificates[1]];
+}
+
+function readBase64Fixture(name: string): Uint8Array {
+  const encoded = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8').replace(/\s/g, '');
+  return new Uint8Array(Buffer.from(encoded, 'base64'));
 }
 
 function rewriteReceipt(
@@ -247,6 +265,116 @@ test('verifies the published RFC 3161 receipt with a pinned TSA root and mirrore
   assert.equal(result.checks.find((check) => check.id === 'rfc3161-certificate-chain')?.ok, true);
   assert.equal(result.checks.find((check) => check.id === 'rfc3161-revocation')?.ok, true);
   assert.equal(result.checks.find((check) => check.id === 'rfc3161-revocation')?.warning, undefined);
+});
+
+test('creates a SHA-256 OCSP request and verifies a signed FreeTSA response in the browser path', async () => {
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const [tsaCertificate, rootCertificate] = readTsaCertificates(receiptBytes);
+  const nonce = Uint8Array.from([
+    0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
+    0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0, 0x00,
+  ]);
+  const request = await createOcspRequest(tsaCertificate, rootCertificate, nonce);
+  const requestDecoded = asn1js.fromBER(exactArrayBuffer(request.requestBytes));
+  assert.equal(requestDecoded.offset, request.requestBytes.byteLength);
+  const parsedRequest = new OCSPRequest({ schema: requestDecoded.result });
+  assert.equal(parsedRequest.tbsRequest.requestList.length, 1);
+  assert.equal(request.certId.hashAlgorithm.algorithmId, '2.16.840.1.101.3.4.2.1');
+
+  const responseBytes = readBase64Fixture('freetsa-ocsp-response.b64');
+  const result = await verifyCertificateWithOcsp(
+    responseBytes,
+    tsaCertificate,
+    rootCertificate,
+    { expectedNonce: nonce, checkDate: new Date('2026-08-28T07:47:30.000Z') },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'good');
+  assert.match(result.detail, /签名、响应者证书链、CertID/);
+  assert.equal(result.serial, '00c2e986160da8e9cd');
+
+  const nonceMismatch = await verifyCertificateWithOcsp(
+    responseBytes,
+    tsaCertificate,
+    rootCertificate,
+    { expectedNonce: Uint8Array.from([0x01]), checkDate: new Date('2026-08-28T07:47:30.000Z') },
+  );
+  assert.equal(nonceMismatch.ok, false);
+  assert.match(nonceMismatch.detail, /nonce/);
+});
+
+test('rejects an old OCSP response that omits nextUpdate', async () => {
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const [tsaCertificate, rootCertificate] = readTsaCertificates(receiptBytes);
+  const result = await verifyCertificateWithOcsp(
+    readBase64Fixture('freetsa-ocsp-response.b64'),
+    tsaCertificate,
+    rootCertificate,
+    { checkDate: new Date('2026-08-30T07:47:30.000Z') },
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'good');
+  assert.match(result.detail, /最大年龄/);
+});
+
+test('uses a valid OCSP response before consulting the CRL fallback', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const crlBytes = new Uint8Array(readFileSync(new URL('../public/revocation/freetsa-root-ca.crl', import.meta.url)));
+  const responseBytes = readBase64Fixture('freetsa-ocsp-response.b64');
+  const nonce = Uint8Array.from([
+    0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
+    0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0, 0x00,
+  ]);
+  let fetchCalled = false;
+  const result = await verifyRfc3161Receipt(
+    receiptBytes,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+    {
+      revocationCrlBytes: crlBytes,
+      revocationOcspNonce: nonce,
+      revocationCheckDate: new Date('2026-08-28T07:47:30.000Z'),
+      revocationOcspFetcher: async (requestBytes, requestNonce) => {
+        fetchCalled = true;
+        assert.ok(requestBytes.byteLength > 0);
+        assert.deepEqual([...requestNonce], [...nonce]);
+        return responseBytes;
+      },
+    },
+  );
+
+  const revocation = result.checks.find((check) => check.id === 'rfc3161-revocation');
+  assert.equal(fetchCalled, true);
+  assert.equal(result.ok, true);
+  assert.equal(revocation?.ok, true);
+  assert.equal(revocation?.warning, undefined);
+  assert.match(revocation?.label || '', /OCSP/);
+});
+
+test('falls back to the mirrored CRL when the OCSP proxy response is unavailable', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const crlBytes = new Uint8Array(readFileSync(new URL('../public/revocation/freetsa-root-ca.crl', import.meta.url)));
+  const result = await verifyRfc3161Receipt(
+    receiptBytes,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+    {
+      revocationCrlBytes: crlBytes,
+      revocationCheckDate: new Date('2026-08-28T00:00:00.000Z'),
+      revocationOcspFetcher: async () => Uint8Array.from([0x30, 0x01, 0x00]),
+    },
+  );
+
+  const revocation = result.checks.find((check) => check.id === 'rfc3161-revocation');
+  assert.equal(result.ok, true);
+  assert.equal(revocation?.ok, true);
+  assert.equal(revocation?.warning, true);
+  assert.match(revocation?.label || '', /CRL 回退/);
+  assert.match(revocation?.detail || '', /CRL 镜像回退/);
 });
 
 test('fails closed when the browser cannot obtain the mirrored CRL', async () => {

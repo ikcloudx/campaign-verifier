@@ -64,7 +64,10 @@ TSA URL。登记记录按 campaign 唯一且不可更新/删除；重复提交�
 浏览器验证器会自动校验 v2 proof 所指向的归档 JSON/TSR 原始字节摘要，并在浏览器内
 解析 RFC 3161 的 CMS/ASN.1 receipt，验证 MessageImprint、CMS/TSA 签名、
 SigningCertificate、TSA 证书链、timeStamping EKU、TSA 身份、关键证书扩展、时间顺序，
-以及本站同源镜像的 FreeTSA CRL。浏览器不使用系统证书库，而是使用 verifier 内置、
+以及本站同源镜像的 FreeTSA CRL。配置 HTTPS OCSP 代理后，浏览器还会使用现有 PKI.js
+生成 SHA-256 CertID 和 nonce 请求，验证原始 BasicOCSPResponse 的签名、委托响应者
+证书链、OCSP Signing EKU、CertID、nonce 和时效；OCSP 返回 revoked 时直接失败，
+OCSP 不可达或 unknown 时回退 CRL，并明确显示回退警告。浏览器不使用系统证书库，而是使用 verifier 内置、
 固定 SHA-256 指纹的 FreeTSA 根证书；TSR 内嵌的证书只能作为链材料，不能自动成为信任锚。
 CRL 的原始 PEM/DER 会在浏览器中解析，使用固定根证书验证签名，检查 `thisUpdate`/
 `nextUpdate`，再按 TSA 签名证书序列号查吊销列表。CRL 缺失、签名错误或过期时，验证项
@@ -75,6 +78,13 @@ FreeTSA 的公开吊销地址不是适合 HTTPS 静态页面直接读取的 CORS
 每周一 03:00 UTC 下载官方 CRL，先用固定指纹的根证书验证 CRL 签名和有效期，再在有变化时
 提交更新；提交完成后 Pages 工作流会重新构建发布。也可以在 Actions 页面手动触发刷新。
 每周刷新意味着吊销信息最多可能滞后约 7 天；高安全场景应把 cron 调整为每日或每 6 小时。
+
+OCSP 代理是可选的第二阶段组件，代码位于 `workers/ocsp-proxy/`。它只允许
+`POST /ocsp`，固定转发到 FreeTSA 的 `http://www.freetsa.org:2560`，限制请求/响应大小、
+超时和来源，并返回原始 `application/ocsp-response`；代理不会返回可信的吊销结论。
+部署 Worker 并绑定 HTTPS 自定义域名后，将该 URL 写入
+`src/revocation-config.ts` 的 `FREETSA_OCSP_PROXY_URL`，再重新构建 Pages。当前值为空，
+因此在代理上线前不会产生无效网络请求，验证器继续使用 CRL。
 
 MessageImprint 只接受 SHA-256、SHA-384 或 SHA-512；SHA-1 会被拒绝。这里不影响
 ESSCertID v1 使用 SHA-1 标识签名证书，因为证书标识摘要与被加时间戳的数据摘要是
@@ -233,7 +243,7 @@ HTTPS URL，摘要对应发布到 Pages 的原始字节：
 
 ## 信任边界
 
-验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，并在 v2 中自动证明归档 JSON/TSR 原始字节与不可变登记值一致；它不能仅凭一个 URL 证明外部副本的历史发布时间。浏览器会验证 RFC 3161 的 CMS/ASN.1、签名、固定信任根、证书链、时间顺序和同源镜像 CRL；CRL 是定期快照，不等同于实时 OCSP，刷新间隔内可能存在状态滞后。参与者仍可使用受信 TSA CA bundle 独立检查最新 CRL/OCSP，并确认 TSA 时间早于目标 drand round。验证器也不能证明主站在快照发布前没有漏记或错误筛选用户。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
+验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，并在 v2 中自动证明归档 JSON/TSR 原始字节与不可变登记值一致；它不能仅凭一个 URL 证明外部副本的历史发布时间。浏览器会验证 RFC 3161 的 CMS/ASN.1、签名、固定信任根、证书链、时间顺序，以及配置代理返回的原始 OCSP 响应或同源镜像 CRL；代理本身不是信任锚。CRL 是定期快照，不等同于实时 OCSP，刷新间隔内可能存在状态滞后。参与者仍可使用受信 TSA CA bundle 独立检查最新 CRL/OCSP，并确认 TSA 时间早于目标 drand round。验证器也不能证明主站在快照发布前没有漏记或错误筛选用户。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
 
 相关协议文档：
 
