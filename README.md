@@ -61,10 +61,19 @@ TSA URL。登记记录按 campaign 唯一且不可更新/删除；重复提交�
 `snapshot_committed` 时完成归档登记，Proof 才会携带可自动读取的归档地址。归档站点必须允许浏览器
 跨域读取 JSON（CORS），并且不应在归档文件中加入未经协议定义的敏感字段。
 
-浏览器验证器会自动校验 v2 proof 所指向的归档 JSON/TSR 原始字节摘要，但目前不解析
-RFC 3161 的 CMS/ASN.1 receipt。因此结果仍会明确标记 TSA 签名、证书链和信任根
-尚未在浏览器验证。下载归档 JSON 和相邻的 `.tsr` 后，应使用与归档时相同的受信
-TSA CA bundle 独立检查：
+浏览器验证器会自动校验 v2 proof 所指向的归档 JSON/TSR 原始字节摘要，并在浏览器内
+解析 RFC 3161 的 CMS/ASN.1 receipt，验证 MessageImprint、CMS/TSA 签名、
+SigningCertificate、TSA 证书链、timeStamping EKU、TSA 身份、关键证书扩展和时间顺序。浏览器不使用
+系统证书库，而是使用 verifier 内置、固定 SHA-256 指纹的 FreeTSA 根证书；TSR
+内嵌的证书只能作为链材料，不能自动成为信任锚。当前页面会把 CRL/OCSP 吊销状态
+标为“未检查”，因为 FreeTSA 的公开吊销地址不是适合 HTTPS 静态页面直接读取的
+CORS 端点。需要独立核对吊销状态时，仍可下载归档 JSON 和相邻的 `.tsr`，使用与
+归档时相同的受信 TSA CA bundle 检查回执：
+
+MessageImprint 只接受 SHA-256、SHA-384 或 SHA-512；SHA-1 会被拒绝。这里不影响
+ESSCertID v1 使用 SHA-1 标识签名证书，因为证书标识摘要与被加时间戳的数据摘要是
+两个不同的字段。RFC 3161 receipt 的浏览器解析上限为 2 MiB，超过上限会在 ASN.1
+解析前拒绝。
 
 ```bash
 curl --fail --location --output summer-test1.json \
@@ -77,6 +86,12 @@ openssl ts -verify \
   -CAfile ./.secrets/freetsa-cacert.pem \
   -untrusted ./.secrets/freetsa-tsa.crt
 ```
+
+浏览器当前固定的 FreeTSA 根证书指纹为
+`a6379e7cecc05faa3cbf076013d745e327bbbaa38c0b9af22469d4701d18aabc`；根证书来源为
+[FreeTSA 官方 cacert.pem](https://freetsa.org/files/cacert.pem)。若改用其他 TSA，
+必须在 verifier 中增加该 TSA 的独立信任 profile（根证书、指纹和可接受的 policy OID），
+不能仅把 TSR 中附带的证书加入信任列表。
 
 当前归档脚本默认使用 FreeTSA：
 `https://freetsa.org/tsr`、`./.secrets/freetsa-cacert.pem` 和
@@ -212,7 +227,7 @@ HTTPS URL，摘要对应发布到 Pages 的原始字节：
 
 ## 信任边界
 
-验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，并在 v2 中自动证明归档 JSON/TSR 原始字节与不可变登记值一致；它不能仅凭一个 URL 证明外部副本的历史发布时间，也不能在浏览器内验证 RFC 3161 CMS/ASN.1 签名与证书链。运营方应公开保存 proof 原文、发布时间、活动规则、原始 commitment JSON 和 `.tsr` 存档凭据；参与者应使用受信 TSA CA bundle 独立验证 receipt，并确认 TSA 时间早于目标 drand round。验证器也不能证明主站在快照发布前没有漏记或错误筛选用户。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
+验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，并在 v2 中自动证明归档 JSON/TSR 原始字节与不可变登记值一致；它不能仅凭一个 URL 证明外部副本的历史发布时间，也不能仅凭 TSA 签名证明吊销状态当前有效。浏览器会验证 RFC 3161 的 CMS/ASN.1、签名、固定信任根、证书链和时间顺序；参与者仍可使用受信 TSA CA bundle 独立检查 CRL/OCSP，并确认 TSA 时间早于目标 drand round。验证器也不能证明主站在快照发布前没有漏记或错误筛选用户。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
 
 相关协议文档：
 

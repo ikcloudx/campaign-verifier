@@ -30,7 +30,7 @@ app.innerHTML = `
         <button type="submit" id="verify-button">开始验证</button>
       </div>
       <p class="hint">也可以直接粘贴 proof JSON；所有哈希和中奖排序均在本浏览器执行。</p>
-      <p class="hint">验证器只接受包含不可变归档的 protocol v2 proof，会自动读取归档 JSON 和 RFC 3161 <code>.tsr</code>。浏览器会校验原始字节摘要，完整 TSA 签名/证书链仍需独立客户端确认。</p>
+      <p class="hint">验证器只接受包含不可变归档的 protocol v2 proof，会自动读取归档 JSON 和 RFC 3161 <code>.tsr</code>。浏览器会解析 CMS/ASN.1，验证 TSA 签名、固定信任根和证书用途；MessageImprint 仅接受 SHA-256/384/512，CRL/OCSP 吊销状态仍会明确标记为未检查。</p>
       <label for="proof-json">Proof JSON（可选）</label>
       <textarea id="proof-json" name="proof-json" rows="7" spellcheck="false"
         placeholder="{\n  &quot;slug&quot;: &quot;...&quot;\n}"></textarea>
@@ -109,7 +109,7 @@ function renderSummary(proof: CampaignProof): void {
   appendSummaryRow('快照承诺', proof.snapshotCommitment.commitmentHash);
   appendSummaryRow('归档 JSON', proof.archive.archiveUrl);
   appendSummaryRow('RFC 3161 receipt', proof.archive.receiptUrl);
-  appendSummaryRow('协议提示', '归档元数据已纳入 proofHash；浏览器会自动校验 JSON/TSR 原始字节摘要。');
+  appendSummaryRow('协议提示', '归档元数据已纳入 proofHash；浏览器会校验 JSON/TSR 原始字节摘要，并在本地解析和验证 RFC 3161 签名与证书链。');
 }
 
 function renderChecks(checks: CheckResult[]): void {
@@ -327,7 +327,7 @@ async function verify(): Promise<void> {
     const warning = checksHaveWarnings(checks);
     setNotice(ok
       ? (warning
-        ? '验证完成：归档 JSON 和 TSR 摘要一致，但 RFC 3161 签名/证书链未在浏览器内解析；请用可信客户端独立确认。'
+        ? '验证完成：RFC 3161 签名和证书链已在浏览器内验证，但 CRL/OCSP 吊销状态未检查。'
         : '验证完成：公开证明、候选快照、中奖顺序和 drand Beacon 均一致。')
       : '验证完成：至少有一项检查未通过，请不要把该结果当作可信抽奖结果。', ok ? 'info' : 'error');
   } catch (error) {

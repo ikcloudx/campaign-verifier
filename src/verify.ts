@@ -151,14 +151,25 @@ export async function verifySnapshotArchive(
     ));
   }
 
+  const { verifyRfc3161Receipt } = await import('./rfc3161.ts');
+  const rfc3161 = await verifyRfc3161Receipt(receiptBytes, commitmentBytes, archive.tsaUrl);
+  checks.push(...rfc3161.checks);
+
+  const snapshotTime = epochMs(proof.snapshot.publishedAt);
+  const targetRoundTime = epochMs(proof.drand.targetRoundTime ?? proof.draw.roundTime);
+  const tsaTime = rfc3161.generatedAt?.getTime() ?? Number.NaN;
+  const tsaTimelineMatches = Number.isFinite(snapshotTime)
+    && Number.isFinite(tsaTime)
+    && Number.isFinite(targetRoundTime)
+    && snapshotTime < tsaTime
+    && tsaTime < targetRoundTime;
   checks.push(check(
-    'rfc3161-signature',
-    'RFC 3161 签名与证书链',
-    receiptHashMatches,
-    receiptHashMatches
-      ? 'TSR 文件摘要一致；当前浏览器版本尚未解析 CMS/ASN.1、验证 TSA 签名及证书链，请用 OpenSSL 或可信客户端完成该独立检查。'
-      : 'TSR 文件摘要不一致，不能继续信任该 RFC 3161 receipt。',
-    receiptHashMatches,
+    'rfc3161-timeline',
+    'TSA 时间顺序',
+    tsaTimelineMatches,
+    tsaTimelineMatches
+      ? `TSA genTime ${rfc3161.generatedAt!.toISOString()} 位于快照发布时间之后、目标 drand round 之前。`
+      : 'TSA genTime 必须位于快照发布时间之后、目标 drand round 之前。',
   ));
 
   return { checks, ok: checks.every((item) => item.ok) };

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import * as asn1js from 'asn1js';
+import { GeneralName, SignedData, TimeStampResp, TSTInfo } from 'pkijs';
 import {
   createDrawSeed,
   createSegmentedSnapshotManifest,
@@ -19,11 +21,101 @@ import {
   SUPPORTED_PROOF_VERSION,
 } from '../src/proof-schema.ts';
 import { verifyProofIntegrity, verifySnapshotArchive } from '../src/verify.ts';
+import { MAX_RFC3161_RECEIPT_BYTES, verifyRfc3161Receipt } from '../src/rfc3161.ts';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/valid-proof.json', import.meta.url), 'utf8')) as Record<string, unknown>;
 
 function cloneFixture(): Record<string, unknown> {
   return JSON.parse(JSON.stringify(fixture)) as Record<string, unknown>;
+}
+
+function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function rewriteReceipt(
+  receiptBytes: Uint8Array,
+  mutate: (response: TimeStampResp, signedData: SignedData) => void,
+): Uint8Array {
+  const decoded = asn1js.fromBER(exactArrayBuffer(receiptBytes));
+  assert.equal(decoded.offset, receiptBytes.byteLength);
+  const response = new TimeStampResp({ schema: decoded.result });
+  const token = response.timeStampToken;
+  assert.ok(token);
+  const signedData = new SignedData({ schema: token.content });
+  mutate(response, signedData);
+  token.content = signedData.toSchema();
+  return new Uint8Array(response.toSchema().toBER(false));
+}
+
+function rewriteTstInfo(
+  receiptBytes: Uint8Array,
+  mutate: (tstInfo: TSTInfo) => void,
+): Uint8Array {
+  return rewriteReceipt(receiptBytes, (_response, signedData) => {
+    const eContent = signedData.encapContentInfo.eContent;
+    assert.ok(eContent);
+    const decoded = asn1js.fromBER(exactArrayBuffer(eContent.valueBlock.valueHexView));
+    assert.equal(decoded.offset, eContent.valueBlock.valueHexView.byteLength);
+    const tstInfo = new TSTInfo({ schema: decoded.result });
+    mutate(tstInfo);
+    eContent.valueBlock.valueHexView = new Uint8Array(tstInfo.toSchema().toBER(false));
+  });
+}
+
+function removeTimestampToken(receiptBytes: Uint8Array): Uint8Array {
+  const decoded = asn1js.fromBER(exactArrayBuffer(receiptBytes));
+  assert.equal(decoded.offset, receiptBytes.byteLength);
+  const response = new TimeStampResp({ schema: decoded.result });
+  response.timeStampToken = undefined;
+  return new Uint8Array(response.toSchema().toBER(false));
+}
+
+function appendToTstInfo(receiptBytes: Uint8Array, suffix: Uint8Array): Uint8Array {
+  return rewriteReceipt(receiptBytes, (_response, signedData) => {
+    const eContent = signedData.encapContentInfo.eContent;
+    assert.ok(eContent);
+    const current = eContent.valueBlock.valueHexView;
+    const updated = new Uint8Array(current.byteLength + suffix.byteLength);
+    updated.set(current);
+    updated.set(suffix, current.byteLength);
+    eContent.valueBlock.valueHexView = updated;
+  });
+}
+
+function rewriteRawReceipt(
+  receiptBytes: Uint8Array,
+  mutate: (root: asn1js.Sequence) => void,
+): Uint8Array {
+  const decoded = asn1js.fromBER(exactArrayBuffer(receiptBytes));
+  assert.equal(decoded.offset, receiptBytes.byteLength);
+  assert.ok(decoded.result instanceof asn1js.Sequence);
+  mutate(decoded.result);
+  return new Uint8Array(decoded.result.toBER(false));
+}
+
+function findSignerCertificateExtension(root: asn1js.Sequence, oid: string): asn1js.Sequence {
+  const token = root.valueBlock.value[1] as asn1js.Sequence;
+  const tokenContent = token.valueBlock.value[1] as asn1js.Constructed;
+  const signedData = tokenContent.valueBlock.value[0] as asn1js.Sequence;
+  const certificates = signedData.valueBlock.value[3] as asn1js.Constructed;
+  const signerCertificate = certificates.valueBlock.value[0] as asn1js.Sequence;
+  const tbsCertificate = signerCertificate.valueBlock.value[0] as asn1js.Sequence;
+  const extensions = (tbsCertificate.valueBlock.value[7] as asn1js.Constructed)
+    .valueBlock.value[0] as asn1js.Sequence;
+  const extension = extensions.valueBlock.value.find((item) => (
+    item instanceof asn1js.Sequence
+      && item.valueBlock.value[0] instanceof asn1js.ObjectIdentifier
+      && item.valueBlock.value[0].valueBlock.toString() === oid
+  ));
+  assert.ok(extension instanceof asn1js.Sequence);
+  return extension;
+}
+
+function replaceExtensionValue(extension: asn1js.Sequence, value: asn1js.BaseBlock): void {
+  const extnValue = extension.valueBlock.value.find((item) => item instanceof asn1js.OctetString);
+  assert.ok(extnValue instanceof asn1js.OctetString);
+  extnValue.valueBlock.valueHexView = new Uint8Array(value.toBER(false));
 }
 
 test('verifies the published protocol test vector', async () => {
@@ -129,11 +221,235 @@ test('parses and verifies an archived protocol v2 proof without trusting reseria
   const archive = parseSnapshotArchive(proof.archive);
   const result = await verifySnapshotArchive(proof, archive, commitmentBytes, receiptBytes);
 
-  assert.equal(result.ok, true);
   assert.equal(result.checks.find((check) => check.id === 'archive-json-sha256')?.ok, true);
   assert.equal(result.checks.find((check) => check.id === 'archive-receipt-sha256')?.ok, true);
   assert.equal(result.checks.find((check) => check.id === 'archive-binding')?.ok, true);
-  assert.equal(result.checks.find((check) => check.id === 'rfc3161-signature')?.warning, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-structure')?.ok, false);
+});
+
+test('verifies the published RFC 3161 receipt with a pinned TSA root', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const result = await verifyRfc3161Receipt(receiptBytes, commitmentBytes, 'https://freetsa.org/tsr');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.generatedAt?.toISOString(), '2026-08-28T05:08:18.000Z');
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-message-imprint')?.ok, true);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-cms-signature')?.ok, true);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-certificate-chain')?.ok, true);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-revocation')?.warning, true);
+});
+
+test('rejects a receipt when its TSA endpoint is outside the configured trust profile', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const result = await verifyRfc3161Receipt(receiptBytes, commitmentBytes, 'https://tsa.example.test/tsr');
+
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-tsa-profile')?.ok, false);
+});
+
+test('detects a modified CMS signature even when the receipt remains parseable', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  receiptBytes[receiptBytes.length - 1] ^= 0x01;
+  const result = await verifyRfc3161Receipt(receiptBytes, commitmentBytes, 'https://freetsa.org/tsr');
+
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-cms-signature')?.ok, false);
+});
+
+test('rejects a receipt larger than the parser limit before ASN.1 processing', async () => {
+  const oversizedReceipt = new Uint8Array(MAX_RFC3161_RECEIPT_BYTES + 1);
+  const result = await verifyRfc3161Receipt(oversizedReceipt, new Uint8Array());
+
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-size')?.ok, false);
+  assert.equal(result.checks.some((check) => check.id === 'rfc3161-structure'), false);
+});
+
+test('rejects malformed ASN.1 and trailing bytes without throwing', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const trailing = new Uint8Array(receiptBytes.byteLength + 1);
+  trailing.set(receiptBytes);
+  trailing[trailing.length - 1] = 0;
+
+  const trailingResult = await verifyRfc3161Receipt(trailing, commitmentBytes, 'https://freetsa.org/tsr');
+  assert.equal(trailingResult.ok, false);
+  assert.equal(trailingResult.checks.find((check) => check.id === 'rfc3161-structure')?.ok, false);
+
+  const malformedResult = await verifyRfc3161Receipt(
+    Uint8Array.from([0x30, 0x80, 0x00, 0x00]),
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(malformedResult.ok, false);
+  assert.equal(malformedResult.checks.find((check) => check.id === 'rfc3161-structure')?.ok, false);
+});
+
+test('rejects a missing token and unsuccessful TSP status', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+
+  const missingToken = await verifyRfc3161Receipt(removeTimestampToken(receiptBytes), commitmentBytes, 'https://freetsa.org/tsr');
+  assert.equal(missingToken.ok, false);
+  assert.equal(missingToken.checks.find((check) => check.id === 'rfc3161-token')?.ok, false);
+
+  const rejectedStatus = await verifyRfc3161Receipt(
+    rewriteReceipt(receiptBytes, (response) => { response.status.status = 2; }),
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(rejectedStatus.ok, false);
+  assert.equal(rejectedStatus.checks.find((check) => check.id === 'rfc3161-status')?.ok, false);
+});
+
+test('rejects a CMS object that is not SignedData or contains multiple signers', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+
+  const wrongContentType = await verifyRfc3161Receipt(
+    rewriteReceipt(receiptBytes, (response) => { response.timeStampToken!.contentType = '1.2.3.4'; }),
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(wrongContentType.ok, false);
+  assert.equal(wrongContentType.checks.find((check) => check.id === 'rfc3161-content-type')?.ok, false);
+
+  const multipleSigners = await verifyRfc3161Receipt(
+    rewriteReceipt(receiptBytes, (_response, signedData) => {
+      signedData.signerInfos.push(signedData.signerInfos[0]);
+    }),
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(multipleSigners.ok, false);
+  assert.equal(multipleSigners.checks.find((check) => check.id === 'rfc3161-signer-count')?.ok, false);
+});
+
+test('rejects weak or unknown MessageImprint algorithms', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+
+  const sha1Receipt = rewriteTstInfo(receiptBytes, (tstInfo) => {
+    tstInfo.messageImprint.hashAlgorithm.algorithmId = '1.3.14.3.2.26';
+  });
+  const sha1Result = await verifyRfc3161Receipt(sha1Receipt, commitmentBytes, 'https://freetsa.org/tsr');
+  assert.equal(sha1Result.ok, false);
+  assert.equal(sha1Result.checks.find((check) => check.id === 'rfc3161-imprint-algorithm')?.ok, false);
+  assert.match(sha1Result.checks.find((check) => check.id === 'rfc3161-imprint-algorithm')?.detail || '', /SHA-1/);
+
+  const unknownReceipt = rewriteTstInfo(receiptBytes, (tstInfo) => {
+    tstInfo.messageImprint.hashAlgorithm.algorithmId = '1.2.3.4.999';
+  });
+  const unknownResult = await verifyRfc3161Receipt(unknownReceipt, commitmentBytes, 'https://freetsa.org/tsr');
+  assert.equal(unknownResult.ok, false);
+  assert.equal(unknownResult.checks.find((check) => check.id === 'rfc3161-imprint-algorithm')?.ok, false);
+  assert.match(unknownResult.checks.find((check) => check.id === 'rfc3161-imprint-algorithm')?.detail || '', /1\.2\.3\.4\.999/);
+});
+
+test('rejects a policy mismatch, malformed TSTInfo, and a bad SigningCertificate hash', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+
+  const policyResult = await verifyRfc3161Receipt(
+    rewriteTstInfo(receiptBytes, (tstInfo) => { tstInfo.policy = '1.2.3.4.2'; }),
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(policyResult.ok, false);
+  assert.equal(policyResult.checks.find((check) => check.id === 'rfc3161-policy')?.ok, false);
+
+  const malformedTstResult = await verifyRfc3161Receipt(
+    appendToTstInfo(receiptBytes, Uint8Array.from([0x00])),
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(malformedTstResult.ok, false);
+  assert.equal(malformedTstResult.checks.find((check) => check.id === 'rfc3161-tst-structure')?.ok, false);
+
+  const badSigningCertificate = rewriteReceipt(receiptBytes, (_response, signedData) => {
+    const attribute = signedData.signerInfos[0].signedAttrs?.attributes.find(
+      (item) => item.type === '1.2.840.113549.1.9.16.2.12',
+    );
+    assert.ok(attribute);
+    const certificateHash = attribute.values[0].valueBlock.value[0].valueBlock.value[0].valueBlock.value[0];
+    assert.ok(certificateHash instanceof asn1js.OctetString);
+    certificateHash.valueBlock.valueHexView[0] ^= 0x01;
+  });
+  const badSigningCertificateResult = await verifyRfc3161Receipt(
+    badSigningCertificate,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(badSigningCertificateResult.ok, false);
+  assert.equal(badSigningCertificateResult.checks.find((check) => check.id === 'rfc3161-signing-certificate')?.ok, false);
+});
+
+test('rejects an invalid TSA certificate usage, validity window, identity, or critical extension', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+
+  const nonTimestampingEku = rewriteRawReceipt(receiptBytes, (root) => {
+    const extension = findSignerCertificateExtension(root, '2.5.29.37');
+    replaceExtensionValue(extension, new asn1js.Sequence({
+      value: [new asn1js.ObjectIdentifier({ value: '1.3.6.1.5.5.7.3.3' })],
+    }));
+  });
+  const nonTimestampingEkuResult = await verifyRfc3161Receipt(
+    nonTimestampingEku,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(nonTimestampingEkuResult.ok, false);
+  assert.equal(nonTimestampingEkuResult.checks.find((check) => check.id === 'rfc3161-certificate-usage')?.ok, false);
+
+  const nonCriticalEku = rewriteRawReceipt(receiptBytes, (root) => {
+    const extension = findSignerCertificateExtension(root, '2.5.29.37');
+    const critical = extension.valueBlock.value.find((item) => item instanceof asn1js.Boolean);
+    assert.ok(critical instanceof asn1js.Boolean);
+    critical.valueBlock.value = false;
+  });
+  const nonCriticalEkuResult = await verifyRfc3161Receipt(
+    nonCriticalEku,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(nonCriticalEkuResult.ok, false);
+  assert.equal(nonCriticalEkuResult.checks.find((check) => check.id === 'rfc3161-certificate-usage')?.ok, false);
+
+  const invalidGenTime = await verifyRfc3161Receipt(
+    rewriteTstInfo(receiptBytes, (tstInfo) => { tstInfo.genTime = new Date('2020-01-01T00:00:00.000Z'); }),
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(invalidGenTime.ok, false);
+  assert.equal(invalidGenTime.checks.find((check) => check.id === 'rfc3161-certificate-chain')?.ok, false);
+
+  const wrongIdentity = await verifyRfc3161Receipt(
+    rewriteTstInfo(receiptBytes, (tstInfo) => {
+      tstInfo.tsa = new GeneralName({ type: 6, value: 'https://wrong.example/tsa' });
+    }),
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(wrongIdentity.ok, false);
+  assert.equal(wrongIdentity.checks.find((check) => check.id === 'rfc3161-tsa-identity')?.ok, false);
+
+  const unknownCriticalExtension = rewriteRawReceipt(receiptBytes, (root) => {
+    const extension = findSignerCertificateExtension(root, '1.3.6.1.5.5.7.1.1');
+    const critical = new asn1js.Boolean({ value: true });
+    extension.valueBlock.value.splice(1, 0, critical);
+  });
+  const unknownCriticalExtensionResult = await verifyRfc3161Receipt(
+    unknownCriticalExtension,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+  assert.equal(unknownCriticalExtensionResult.ok, false);
+  assert.equal(unknownCriticalExtensionResult.checks.find((check) => check.id === 'rfc3161-critical-extensions')?.ok, false);
 });
 
 test('detects changes to the original archive JSON or detached receipt bytes', async () => {
@@ -163,7 +479,7 @@ test('detects changes to the original archive JSON or detached receipt bytes', a
   assert.equal(result.ok, false);
   assert.equal(result.checks.find((check) => check.id === 'archive-json-sha256')?.ok, false);
   assert.equal(result.checks.find((check) => check.id === 'archive-receipt-sha256')?.ok, false);
-  assert.equal(result.checks.find((check) => check.id === 'rfc3161-signature')?.ok, false);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-structure')?.ok, false);
 });
 
 test('requires protocol v2 archive metadata and rejects unsafe archive URLs', () => {

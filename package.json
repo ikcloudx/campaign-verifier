@@ -12,7 +12,9 @@
     "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "dependencies": {
-    "drand-client": "1.4.2"
+    "asn1js": "3.0.10",
+    "drand-client": "1.4.2",
+    "pkijs": "3.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
