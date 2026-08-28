@@ -22,6 +22,15 @@ function jsonError(status: number, message: string, origin: string | null): Resp
   return new Response(JSON.stringify({ error: message }), { status, headers });
 }
 
+function safeErrorDetails(error: unknown): { name: string; message: string } {
+  const name = error instanceof Error ? error.name : 'UnknownError';
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    name: name.slice(0, 64),
+    message: message.slice(0, 256),
+  };
+}
+
 async function readBounded(response: Response, maxBytes: number): Promise<ArrayBuffer> {
   const declaredLength = Number(response.headers.get('content-length'));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
@@ -92,6 +101,7 @@ export default {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+    let phase = 'fetch';
     try {
       const upstream = await fetch(UPSTREAM_OCSP_URL, {
         method: 'POST',
@@ -103,13 +113,25 @@ export default {
         body: requestBody,
         signal: controller.signal,
       });
-      if (!upstream.ok) return jsonError(502, 'OCSP upstream returned an error', origin);
+      if (!upstream.ok) {
+        console.error('OCSP upstream returned a non-success status', {
+          phase,
+          status: upstream.status,
+        });
+        return jsonError(502, 'OCSP upstream returned an error', origin);
+      }
+      phase = 'read-response';
       const responseBody = await readBounded(upstream, MAX_RESPONSE_BYTES);
       const headers = corsHeaders(origin);
       headers.set('Content-Type', 'application/ocsp-response');
       headers.set('Cache-Control', 'no-store');
       return new Response(responseBody, { status: 200, headers });
-    } catch {
+    } catch (error) {
+      console.error('OCSP upstream request failed', {
+        phase,
+        requestBytes: requestBody.byteLength,
+        ...safeErrorDetails(error),
+      });
       return jsonError(502, 'OCSP upstream is unavailable', origin);
     } finally {
       clearTimeout(timeout);
