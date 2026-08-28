@@ -12,7 +12,7 @@
 body { margin: 0; }
 
 .shell {
-  width: min(860px, calc(100% - 2rem));
+  width: min(1120px, calc(100% - 2rem));
   margin: 0 auto;
   padding: 3.5rem 0 2rem;
 }
@@ -74,6 +74,8 @@ button:disabled { cursor: wait; opacity: .65; }
 .summary dt, .summary dd { border-bottom: 1px solid #edf0f5; margin: 0; padding: .55rem 0; }
 .summary dt { color: #66758a; font-size: .84rem; }
 .summary dd { font-weight: 650; overflow-wrap: anywhere; }
+.version-note { background: #fff8df; border: 1px solid #f0d48a; border-radius: 12px; color: #79530b; margin: -0.4rem 0 1.25rem; padding: .7rem .8rem; }
+.version-note a { color: #684705; font-weight: 750; overflow-wrap: anywhere; }
 
 .checks, .winners { list-style: none; margin: 0 0 1.5rem; padding: 0; }
 .check { align-items: flex-start; border: 1px solid #e6eaf1; border-radius: 12px; display: flex; gap: .7rem; margin-bottom: .55rem; padding: .7rem .8rem; }
@@ -84,11 +86,41 @@ button:disabled { cursor: wait; opacity: .65; }
 .check strong, .check small { display: block; }
 .check small { color: #66758a; margin-top: .15rem; }
 .winners { counter-reset: item; }
-.winners li { align-items: baseline; border-bottom: 1px solid #edf0f5; display: flex; gap: .8rem; justify-content: space-between; padding: .6rem 0; }
+.winners li { align-items: flex-start; border-bottom: 1px solid #edf0f5; display: flex; gap: .8rem; justify-content: space-between; padding: .6rem 0; }
 .winners li::before { color: #4663aa; content: counter(item); counter-increment: item; font-weight: 800; min-width: 1.25rem; }
-.winners code { flex: 1; overflow-wrap: anywhere; }
-.winners small { color: #66758a; font-size: .72rem; max-width: 48%; overflow-wrap: anywhere; text-align: right; }
-.footer { padding: 0 .2rem; }
+.winners .ticket-copy {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #24458f;
+  display: flex;
+  flex: 1 1 auto;
+  font: inherit;
+  gap: .55rem;
+  min-width: 0;
+  padding: .25rem .35rem;
+  text-align: left;
+}
+.winners .ticket-copy:hover { background: #eef3ff; color: #1c3978; }
+.winners .ticket-copy:focus-visible { border-color: #4663aa; box-shadow: 0 0 0 3px rgb(70 99 170 / 17%); outline: none; }
+.winners .ticket-copy.copied { color: #176a3c; }
+.winners .ticket-copy.copy-failed { color: #a12f3e; }
+.winners code { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.winners .copy-label { color: #66758a; flex: 0 0 auto; font-family: inherit; font-size: .72rem; white-space: nowrap; }
+.winners .ticket-copy.copied .copy-label { color: #176a3c; }
+.winners .ticket-copy.copy-failed .copy-label { color: #a12f3e; }
+.winners small { color: #66758a; flex: 0 1 52%; font-size: .72rem; max-width: 52%; min-width: 0; overflow-wrap: anywhere; text-align: right; }
+.footer { align-items: center; display: flex; flex-wrap: wrap; gap: .75rem 1rem; justify-content: space-between; padding: 0 .2rem; }
+.footer p { margin-bottom: 0; }
+.build-info { color: #66758a; flex: 1 1 auto; font-size: .78rem; min-width: 0; overflow-wrap: anywhere; }
+.build-info code { font-size: .9em; }
+.build-info a { color: inherit; }
+.build-info a:hover { color: #24458f; }
+.source-link { align-items: center; color: #4663aa; display: inline-flex; flex: 0 0 auto; font-size: .84rem; font-weight: 750; gap: .4rem; text-decoration: none; }
+.source-link:hover { color: #24458f; text-decoration: underline; }
+.source-link:focus-visible { border-radius: 6px; box-shadow: 0 0 0 3px rgb(70 99 170 / 17%); outline: none; }
+.source-link svg { fill: currentColor; height: 1.15rem; width: 1.15rem; }
 
 @media (max-width: 620px) {
   .shell { padding-top: 2rem; }
@@ -99,4 +131,5 @@ button:disabled { cursor: wait; opacity: .65; }
   .summary dd { padding-top: .2rem; }
   .winners li { align-items: flex-start; flex-wrap: wrap; }
   .winners small { margin-left: 2rem; max-width: calc(100% - 2rem); text-align: left; width: 100%; }
+  .footer { align-items: flex-start; flex-direction: column; }
 }

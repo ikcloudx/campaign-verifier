@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2026-08-28"
 compatibility_flags = ["allow_custom_ports"]
 
-# Bind a custom domain such as ocsp.kcloudx.com in the Cloudflare dashboard
-# after deploying this Worker. The browser verifier remains disabled until
-# FREETSA_OCSP_PROXY_URL in src/revocation-config.ts is set to that HTTPS URL.
+# Bind a custom domain such as ocsp.kcloudx.com in the Cloudflare dashboard.
+# Change namespace_id if this integer is already used by another limiter in the account.
+[[ratelimits]]
+name = "OCSP_RATE_LIMITER"
+namespace_id = "92837401"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60

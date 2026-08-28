@@ -4,6 +4,14 @@ const MAX_REQUEST_BYTES = 16 * 1024;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 const UPSTREAM_TIMEOUT_MS = 5_000;
 
+interface RateLimitBinding {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
+interface Env {
+  OCSP_RATE_LIMITER?: RateLimitBinding;
+}
+
 function corsHeaders(origin: string | null): Headers {
   const headers = new Headers({ Vary: 'Origin' });
   if (origin === ALLOWED_ORIGIN) {
@@ -15,10 +23,11 @@ function corsHeaders(origin: string | null): Headers {
   return headers;
 }
 
-function jsonError(status: number, message: string, origin: string | null): Response {
+function jsonError(status: number, message: string, origin: string | null, retryAfterSeconds?: number): Response {
   const headers = corsHeaders(origin);
   headers.set('Content-Type', 'application/json; charset=utf-8');
   headers.set('Cache-Control', 'no-store');
+  if (retryAfterSeconds !== undefined) headers.set('Retry-After', String(retryAfterSeconds));
   return new Response(JSON.stringify({ error: message }), { status, headers });
 }
 
@@ -68,7 +77,7 @@ async function readBounded(response: Response, maxBytes: number): Promise<ArrayB
 }
 
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: Env = {}): Promise<Response> {
     const requestUrl = new URL(request.url);
     const origin = request.headers.get('Origin');
 
@@ -93,6 +102,16 @@ export default {
     const declaredLength = Number(request.headers.get('Content-Length'));
     if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) {
       return jsonError(413, 'request too large', origin);
+    }
+    if (env.OCSP_RATE_LIMITER) {
+      const clientAddress = request.headers.get('cf-connecting-ip')?.trim() || 'anonymous';
+      try {
+        const { success } = await env.OCSP_RATE_LIMITER.limit({ key: `ocsp:${clientAddress}` });
+        if (!success) return jsonError(429, 'rate limit exceeded', origin, 60);
+      } catch (error) {
+        console.error('OCSP rate limiter unavailable', safeErrorDetails(error));
+        return jsonError(503, 'rate limiter unavailable', origin);
+      }
     }
     const requestBody = await request.arrayBuffer();
     if (requestBody.byteLength === 0 || requestBody.byteLength > MAX_REQUEST_BYTES) {

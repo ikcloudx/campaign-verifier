@@ -2,6 +2,10 @@
 
 一个完全独立、纯静态的营销活动抽奖公开验证器。它不依赖主站的前端或后端，不需要登录，也不接收用户邮箱；浏览器会在本地读取公开 `proof` JSON，复算候选快照、抽奖种子和中奖顺序，并通过官方 `drand-client` 校验 Beacon 签名。
 
+- 在线验证器：[ikcloudx.github.io/campaign-verifier](https://ikcloudx.github.io/campaign-verifier/)
+- 源代码：[github.com/ikcloudx/campaign-verifier](https://github.com/ikcloudx/campaign-verifier)
+- 生产 OCSP 代理：[ocsp.kcloudx.com/ocsp](https://ocsp.kcloudx.com/ocsp)
+
 ## 能验证什么
 
 - `eligibilityRules` 的稳定 JSON 哈希是否与快照和 draw 记录一致；
@@ -30,7 +34,19 @@ proof 根部携带 `archive`；其中的 JSON/TSR URL 和原始字节 SHA-256 �
 https://主站.example/api/campaigns/summer-2025/proof
 ```
 
-也可以通过 `?proof=<URL-encoded-proof-url>` 预填地址，或粘贴完整 JSON。验证过程不会把 proof 发到本验证器的服务器；浏览器只向输入的 proof、公开 drand relay，以及 proof 登记的归档 URL 发起请求。
+也可以通过 `?proof=<URL-encoded-proof-url>` 预填地址，或粘贴完整 JSON。验证过程不会把 proof 发到本验证器的服务器；浏览器只向输入的 proof、公开 drand relay、proof 登记的归档 URL、生产 OCSP 代理，以及本站同源 CRL 镜像发起请求。
+
+### 浏览器验证流程
+
+验证器在浏览器中按以下顺序完成检查：
+
+1. 读取 proof，并校验 proof、快照和归档文件的摘要与结构；
+2. 解析 RFC 3161 TSR，在本地验证 MessageImprint、CMS/TSA 签名、证书链、用途和时间顺序；
+3. 优先通过 `https://ocsp.kcloudx.com/ocsp` 获取原始 OCSP 响应，并由 PKI.js 在浏览器内验证签名、响应者证书链、CertID、nonce 和时效；
+4. OCSP 不可达或返回 `unknown` 时，回退到仓库同源的 FreeTSA CRL，并显示回退警告；
+5. 验证 drand Beacon 签名、抽奖种子、票据分数和最终中奖顺序。
+
+OCSP 返回 `revoked`、签名错误、证书链不可信或关键摘要不一致时，验证直接失败，不会把异常状态当作“未吊销”。
 
 ### 独立快照承诺
 
@@ -64,11 +80,12 @@ TSA URL。登记记录按 campaign 唯一且不可更新/删除；重复提交�
 浏览器验证器会自动校验 v2 proof 所指向的归档 JSON/TSR 原始字节摘要，并在浏览器内
 解析 RFC 3161 的 CMS/ASN.1 receipt，验证 MessageImprint、CMS/TSA 签名、
 SigningCertificate、TSA 证书链、timeStamping EKU、TSA 身份、关键证书扩展、时间顺序，
-以及本站同源镜像的 FreeTSA CRL。配置 HTTPS OCSP 代理后，浏览器还会使用现有 PKI.js
-生成 SHA-256 CertID 和 nonce 请求，验证原始 BasicOCSPResponse 的签名、委托响应者
-证书链、OCSP Signing EKU、CertID、nonce 和时效；OCSP 返回 revoked 时直接失败，
-OCSP 不可达或 unknown 时回退 CRL，并明确显示回退警告。浏览器不使用系统证书库，而是使用 verifier 内置、
-固定 SHA-256 指纹的 FreeTSA 根证书；TSR 内嵌的证书只能作为链材料，不能自动成为信任锚。
+以及本站同源镜像的 FreeTSA CRL。生产环境已配置 HTTPS OCSP 代理
+`https://ocsp.kcloudx.com/ocsp`；浏览器使用现有 PKI.js 生成 SHA-256 CertID 和 nonce 请求，
+验证原始 BasicOCSPResponse 的签名、委托响应者证书链、OCSP Signing EKU、CertID、nonce
+和时效。OCSP 返回 `revoked` 时直接失败，OCSP 不可达或 `unknown` 时回退 CRL，并明确显示
+回退警告。浏览器不使用系统证书库，而是使用 verifier 内置、固定 SHA-256 指纹的 FreeTSA
+根证书；TSR 内嵌的证书只能作为链材料，不能自动成为信任锚。
 CRL 的原始 PEM/DER 会在浏览器中解析，使用固定根证书验证签名，检查 `thisUpdate`/
 `nextUpdate`，再按 TSA 签名证书序列号查吊销列表。CRL 缺失、签名错误或过期时，验证项
 会失败（不会把“无法检查”当作“未吊销”）。
@@ -79,12 +96,13 @@ FreeTSA 的公开吊销地址不是适合 HTTPS 静态页面直接读取的 CORS
 提交更新；提交完成后 Pages 工作流会重新构建发布。也可以在 Actions 页面手动触发刷新。
 每周刷新意味着吊销信息最多可能滞后约 7 天；高安全场景应把 cron 调整为每日或每 6 小时。
 
-OCSP 代理是可选的第二阶段组件，代码位于 `workers/ocsp-proxy/`。它只允许
-`POST /ocsp`，固定转发到 FreeTSA 的 `http://www.freetsa.org:2560`，限制请求/响应大小、
-超时和来源，并返回原始 `application/ocsp-response`；代理不会返回可信的吊销结论。
-部署 Worker 并绑定 HTTPS 自定义域名后，将该 URL 写入
-`src/revocation-config.ts` 的 `FREETSA_OCSP_PROXY_URL`，再重新构建 Pages。当前值为空，
-因此在代理上线前不会产生无效网络请求，验证器继续使用 CRL。
+生产环境已启用 OCSP 代理，代码位于 `workers/ocsp-proxy/`，配置值为
+`src/revocation-config.ts` 中的 `FREETSA_OCSP_PROXY_URL = 'https://ocsp.kcloudx.com/ocsp'`。
+代理只允许 `POST /ocsp` 和 CORS 预检，固定转发到 FreeTSA，限制请求/响应大小、超时、重定向
+和来源，并由 Cloudflare 原生 Rate Limiting binding 限制为每个客户端地址每 60 秒 30 个有效请求；
+超限返回 429，限流服务异常则返回 503。代理不会解析 OCSP，也不会返回可信的吊销结论。
+Worker 部署、自定义域名、CORS、日志和故障排查见
+[`workers/ocsp-proxy/README.md`](workers/ocsp-proxy/README.md)。修改代理地址或代码后，需要重新构建并发布 Pages。
 
 MessageImprint 只接受 SHA-256、SHA-384 或 SHA-512；SHA-1 会被拒绝。这里不影响
 ESSCertID v1 使用 SHA-1 标识签名证书，因为证书标识摘要与被加时间戳的数据摘要是
@@ -178,9 +196,19 @@ npm run dev
 
 ## 部署
 
-`.github/workflows/pages.yml` 会在 `main` 分支变更、手动触发或 CRL 刷新工作流完成后运行测试、类型检查和构建，并部署到 GitHub Pages。仓库 Settings → Pages 中选择 **GitHub Actions** 作为发布来源。
+`.github/workflows/pages.yml` 会在 `main` 分支变更、手动触发或 CRL 刷新工作流完成后运行测试、类型检查和构建，并部署到 GitHub Pages。构建会注入已检出的 Git commit SHA，页面底部和验证结果中会同时显示当前部署 commit 与 proof 登记的 `verifierCommit`。仓库 Settings → Pages 中选择 **GitHub Actions** 作为发布来源。
 
-该站点也可以部署到 Cloudflare Pages：构建命令为 `npm run build`，输出目录为 `dist`，Node.js 版本使用 22。部署平台只托管静态文件，不会获得 proof 中的任何额外权限。
+该站点也可以部署到 Cloudflare Pages：构建命令为 `npm run build`，输出目录为 `dist`，Node.js 版本使用 22。为显示真实部署版本，请在构建环境设置 `VITE_VERIFIER_COMMIT` 为该次发布对应的 Git SHA；未设置时页面会显示 `development`。部署平台只托管静态文件，不会获得 proof 中的任何额外权限。
+
+OCSP 代理是独立的 Cloudflare Worker，不会随 Pages 自动部署。生产环境的代理地址为
+`https://ocsp.kcloudx.com/ocsp`；如需重新部署或更换域名，请按
+[`workers/ocsp-proxy/README.md`](workers/ocsp-proxy/README.md) 完成 Worker、HTTPS 自定义域名、CORS
+和真实 DER 请求检查，再更新 `FREETSA_OCSP_PROXY_URL` 并重新发布 Pages。
+
+`.github/workflows/dependency-audit.yml` 会在提交、Pull Request、每周定时任务和手动触发时执行
+`npm ci --ignore-scripts` 与高危级别的 `npm audit`；`.github/dependabot.yml` 每周检查 npm 依赖
+和 GitHub Actions 更新。Pages 与 CRL 工作流中的 Action 均固定到完整 commit SHA，避免可变标签
+在后续运行中指向未经审查的代码。
 
 ## 验证协议
 
@@ -243,7 +271,13 @@ HTTPS URL，摘要对应发布到 Pages 的原始字节：
 
 ## 信任边界
 
-验证器能证明“公开 proof 与指定 drand Beacon、指定快照和公开算法一致”，并在 v2 中自动证明归档 JSON/TSR 原始字节与不可变登记值一致；它不能仅凭一个 URL 证明外部副本的历史发布时间。浏览器会验证 RFC 3161 的 CMS/ASN.1、签名、固定信任根、证书链、时间顺序，以及配置代理返回的原始 OCSP 响应或同源镜像 CRL；代理本身不是信任锚。CRL 是定期快照，不等同于实时 OCSP，刷新间隔内可能存在状态滞后。参与者仍可使用受信 TSA CA bundle 独立检查最新 CRL/OCSP，并确认 TSA 时间早于目标 drand round。验证器也不能证明主站在快照发布前没有漏记或错误筛选用户。drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
+验证器可以证明公开 proof 与指定 drand Beacon、指定快照和公开算法一致，并在 v2 中自动证明归档 JSON/TSR 原始字节与不可变登记值一致；它不能仅凭一个 URL 证明外部副本的历史发布时间。
+
+- 浏览器不使用操作系统证书库；只信任 verifier 内置、固定 SHA-256 指纹的 FreeTSA 根证书。TSR 内嵌证书只能作为链材料，不能自动成为信任锚。
+- 浏览器会验证 RFC 3161 的 CMS/ASN.1、签名、证书链和时间顺序，并验证 OCSP 原始响应或同源镜像 CRL；OCSP Worker 只是受限转发器，本身不是信任锚，也不返回可信的吊销布尔值。
+- CRL 是定期快照，不等同于实时 OCSP；每周刷新时，吊销信息最多可能滞后约 7 天。高安全场景应缩短刷新周期，或使用受信客户端独立检查最新 CRL/OCSP。
+- 验证器不能证明主站在快照发布前没有漏记或错误筛选用户；参与者仍应确认 TSA 时间早于目标 drand round，并保留 proof、归档文件和验证时间。
+- drand relay 暂时不可用时，快照和中奖顺序仍可本地复算，但整体结果会标记为未完成验证。
 
 相关协议文档：
 
