@@ -8,7 +8,7 @@ export const FREETSA_CRL_SOURCE_URL = 'https://www.freetsa.org/crl/root_ca.crl';
  * Optional HTTPS relay for FreeTSA's HTTP-only OCSP endpoint. Keep empty until
  * the relay has been deployed and its exact origin has been configured.
  */
-export const FREETSA_OCSP_PROXY_URL = '';
+export const FREETSA_OCSP_PROXY_URL = 'https://ocsp.kcloudx.com/ocsp';
 /** Keep the browser parser bounded even if a mirror is compromised. */
 export const MAX_REVOCATION_CRL_BYTES = 2 * 1024 * 1024;
 /** OCSP requests are small; this also bounds a compromised caller or proxy. */
