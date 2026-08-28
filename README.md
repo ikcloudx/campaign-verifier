@@ -196,9 +196,9 @@ npm run dev
 
 ## 部署
 
-`.github/workflows/pages.yml` 会在 `main` 分支变更、手动触发或 CRL 刷新工作流完成后运行测试、类型检查和构建，并部署到 GitHub Pages。构建会注入已检出的 Git commit SHA，页面底部和验证结果中会同时显示当前部署 commit 与 proof 登记的 `verifierCommit`。仓库 Settings → Pages 中选择 **GitHub Actions** 作为发布来源。
+`.github/workflows/pages.yml` 会在 `main` 分支变更、手动触发或 CRL 刷新工作流完成后运行测试、类型检查和构建，并部署到 GitHub Pages。仓库 Settings → Pages 中选择 **GitHub Actions** 作为发布来源。
 
-该站点也可以部署到 Cloudflare Pages：构建命令为 `npm run build`，输出目录为 `dist`，Node.js 版本使用 22。为显示真实部署版本，请在构建环境设置 `VITE_VERIFIER_COMMIT` 为该次发布对应的 Git SHA；未设置时页面会显示 `development`。部署平台只托管静态文件，不会获得 proof 中的任何额外权限。
+该站点也可以部署到 Cloudflare Pages：构建命令为 `npm run build`，输出目录为 `dist`，Node.js 版本使用 22。部署平台只托管静态文件，不会获得 proof 中的任何额外权限。
 
 OCSP 代理是独立的 Cloudflare Worker，不会随 Pages 自动部署。生产环境的代理地址为
 `https://ocsp.kcloudx.com/ocsp`；如需重新部署或更换域名，请按
