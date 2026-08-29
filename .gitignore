@@ -4,5 +4,14 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Cloudflare Wrangler local state and secrets
+.wrangler/
+.dev.vars*
+!.dev.vars.example
+
+# TypeScript incremental build metadata
+*.tsbuildinfo
+
 .DS_Store
 *.log
