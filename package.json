@@ -19,7 +19,7 @@
     "pkijs": "3.4.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.0",
+    "@types/node": "^26.3.0",
     "typescript": "^5.8.3",
     "vite": "^6.3.5"
   }
