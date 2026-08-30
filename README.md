@@ -109,6 +109,20 @@ ESSCertID v1 使用 SHA-1 标识签名证书，因为证书标识摘要与被加
 两个不同的字段。RFC 3161 receipt 的浏览器解析上限为 2 MiB，超过上限会在 ASN.1
 解析前拒绝。
 
+若需要在独立环境交叉检查时间戳，可运行仓库提供的 Node CLI。CLI 只读取本地原始字节，使用
+独立取得的 TSA CA bundle，并在 receipt 省略 `accuracy` 时要求显式提供保守上限：
+
+```bash
+npm run verify:rfc3161 -- \
+  --data summer-test1.json \
+  --receipt summer-test1.tsr \
+  --ca ./.secrets/freetsa-cacert.pem \
+  --untrusted ./.secrets/freetsa-tsa.crt \
+  --round-time 2026-01-03T00:00:00Z
+```
+
+完整参数和稳定错误码见 [RFC 3161 验证](docs/rfc3161.md)。
+
 ```bash
 curl --fail --location --output summer-test1.json \
   https://ikcloudx.github.io/campaign-verifier/commitments/summer-test1.json
@@ -164,6 +178,14 @@ receipt 上限为 2 MiB。proof 和 archive 请求均有 10 秒超时，并以
 流式方式限制响应大小。
 
 主站目前使用受限 CORS。要让浏览器跨域读取 proof，需要把验证器正式域名加入主站的 `ALLOWED_ORIGINS`（或为只读 proof 路由配置等价的公开 CORS）。这不会改变 proof 的内容，也不会授予验证器管理员权限。
+
+仓库内文档：
+
+- [验证结果说明](docs/results.md)
+- [快照承诺与归档](docs/archival.md)
+- [RFC 3161 验证](docs/rfc3161.md)
+- [部署](docs/deployment.md)
+- [贡献指南](CONTRIBUTING.md)
 
 本目录自身是独立 Git 仓库。主站仓库只保留部署说明，不把 verifier 作为子目录提交；发布前请在本目录提交并推送到单独的公开仓库，再启用 Pages 或其他静态托管。
 
