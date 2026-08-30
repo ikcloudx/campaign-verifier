@@ -20,6 +20,12 @@
 
 该配置只允许读取公开资源，不会改变 proof 内容或授予管理员权限。
 
+## 自动化与安全检查
+
+Pages workflow 会在 `main` 分支变更、手动触发或 CRL 刷新成功后运行文档检查、测试和构建。OCSP 代理是独立 Cloudflare Worker，不会随 Pages 自动部署，操作说明见 [Worker 文档](../workers/ocsp-proxy/README.md)。
+
+`.github/workflows/dependency-audit.yml` 会在提交、Pull Request、每周定时任务和手动触发时运行依赖审计；Dependabot 每周检查 npm 和 GitHub Actions 更新。部署相关 Action 固定到完整 commit SHA，更新时应审查对应变更。
+
 ## 参考资料
 
 - [GitHub Pages custom workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)
