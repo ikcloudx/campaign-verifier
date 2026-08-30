@@ -3,7 +3,6 @@
 独立、纯静态的营销活动抽奖公开验证器。浏览器在本地读取公开证明（proof），复算候选快照、抽奖种子和中奖顺序，并验证 drand 信标、RFC 3161 时间戳及证书吊销状态。无需登录，也不会读取或上传用户邮箱。
 
 - [在线验证器](https://ikcloudx.github.io/campaign-verifier/)
-- [源代码](https://github.com/ikcloudx/campaign-verifier)
 
 ## 使用
 
