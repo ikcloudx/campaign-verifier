@@ -27,8 +27,19 @@ export interface Rfc3161VerificationResult {
   checks: Rfc3161Check[];
   ok: boolean;
   generatedAt?: Date;
+  /** RFC 3161 Accuracy components, when the token declares them. */
+  accuracy?: Rfc3161Accuracy;
+  /** Conservative millisecond ceiling for the declared Accuracy. */
+  accuracyMs?: number;
   policy?: string;
   signerSubject?: string;
+}
+
+export interface Rfc3161Accuracy {
+  seconds: number;
+  millis: number;
+  micros: number;
+  totalMicros: string;
 }
 
 export interface Rfc3161VerificationOptions {
@@ -169,6 +180,49 @@ function parseExactTstInfo(bytes: Uint8Array): TSTInfo {
     throw new Error('TSTInfo 包含无效 ASN.1，或末尾存在未解析字节。');
   }
   return new TSTInfo({ schema: decoded.result });
+}
+
+interface ParsedAccuracy {
+  value: Rfc3161Accuracy;
+  milliseconds: number;
+}
+
+/**
+ * Convert PKI.js' RFC 3161 Accuracy object to a bounded upper-bound value.
+ * Accuracy is optional in RFC 3161; malformed components must never be
+ * silently treated as zero because the result is used for the round boundary.
+ */
+function parseAccuracy(accuracy: TSTInfo['accuracy']): ParsedAccuracy | undefined {
+  if (!accuracy) return undefined;
+
+  const seconds = accuracy.seconds ?? 0;
+  const millis = accuracy.millis ?? 0;
+  const micros = accuracy.micros ?? 0;
+  const validInteger = (value: number): boolean => Number.isSafeInteger(value) && value >= 0;
+  if (!validInteger(seconds) || !validInteger(millis) || !validInteger(micros)) {
+    throw new Error('TSTInfo.accuracy components must be non-negative safe integers.');
+  }
+  if ((accuracy.millis !== undefined && (millis < 1 || millis > 999))
+    || (accuracy.micros !== undefined && (micros < 1 || micros > 999))) {
+    throw new Error('TSTInfo.accuracy millis and micros must be between 1 and 999.');
+  }
+
+  const totalMicros = (BigInt(seconds) * 1_000_000n)
+    + (BigInt(millis) * 1_000n)
+    + BigInt(micros);
+  const millisecondsBigInt = (totalMicros + 999n) / 1_000n;
+  if (millisecondsBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('TSTInfo.accuracy is outside the supported time range.');
+  }
+  return {
+    value: {
+      seconds,
+      millis,
+      micros,
+      totalMicros: totalMicros.toString(),
+    },
+    milliseconds: Number(millisecondsBigInt),
+  };
 }
 
 async function digestBytes(algorithm: AlgorithmIdentifierName, bytes: Uint8Array): Promise<Uint8Array> {
@@ -397,6 +451,27 @@ export async function verifyRfc3161Receipt(
   }
   checks.push(check('rfc3161-tst-structure', 'TSTInfo ASN.1 结构', true, 'TSTInfo 结构完整。'));
 
+  let parsedAccuracy: ParsedAccuracy | undefined;
+  let accuracyError: string | undefined;
+  try {
+    parsedAccuracy = parseAccuracy(tstInfo.accuracy);
+  } catch (error) {
+    accuracyError = error instanceof Error ? error.message : 'TSTInfo.accuracy 无法解析。';
+  }
+  checks.push(check(
+    'rfc3161-accuracy',
+    'RFC 3161 时间精度',
+    accuracyError === undefined,
+    accuracyError
+      || (parsedAccuracy
+        ? `TSTInfo 声明的最大误差为 ${parsedAccuracy.value.totalMicros} 微秒。`
+        : 'TSTInfo 未声明 accuracy；浏览器时间顺序检查将保留 genTime，并以警告提示。'),
+    accuracyError === undefined && parsedAccuracy === undefined,
+  ));
+  const accuracyMetadata: Pick<Rfc3161VerificationResult, 'accuracy' | 'accuracyMs'> = parsedAccuracy
+    ? { accuracy: parsedAccuracy.value, accuracyMs: parsedAccuracy.milliseconds }
+    : {};
+
   const tstVersionOk = tstInfo.version === 1;
   checks.push(check(
     'rfc3161-tst-version',
@@ -518,7 +593,11 @@ export async function verifyRfc3161Receipt(
       false,
       error instanceof Error ? error.message : '内置 TSA 信任根无法解析。',
     ));
-    return finish(checks, { generatedAt: tstInfo.genTime, policy: tstInfo.policy });
+    return finish(checks, {
+      generatedAt: tstInfo.genTime,
+      policy: tstInfo.policy,
+      ...accuracyMetadata,
+    });
   }
 
   let chainResult: Awaited<ReturnType<SignedData['verify']>> | undefined;
@@ -702,6 +781,7 @@ export async function verifyRfc3161Receipt(
 
   return finish(checks, {
     generatedAt: tstInfo.genTime,
+    ...accuracyMetadata,
     policy: tstInfo.policy,
     signerSubject: signerCertificate ? subjectLabel(signerCertificate) : undefined,
   });

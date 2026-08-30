@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import * as asn1js from 'asn1js';
-import { Certificate, GeneralName, OCSPRequest, SignedData, TimeStampResp, TSTInfo } from 'pkijs';
+import { Accuracy, Certificate, GeneralName, OCSPRequest, SignedData, TimeStampResp, TSTInfo } from 'pkijs';
 import {
   createDrawSeed,
   createSegmentedSnapshotManifest,
@@ -265,6 +265,50 @@ test('verifies the published RFC 3161 receipt with a pinned TSA root and mirrore
   assert.equal(result.checks.find((check) => check.id === 'rfc3161-certificate-chain')?.ok, true);
   assert.equal(result.checks.find((check) => check.id === 'rfc3161-revocation')?.ok, true);
   assert.equal(result.checks.find((check) => check.id === 'rfc3161-revocation')?.warning, undefined);
+});
+
+test('applies declared RFC 3161 accuracy as a conservative round-boundary allowance', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const receiptWithAccuracy = rewriteTstInfo(receiptBytes, (tstInfo) => {
+    tstInfo.accuracy = new Accuracy({ seconds: 1, millis: 250 });
+  });
+
+  const result = await verifyRfc3161Receipt(
+    receiptWithAccuracy,
+    commitmentBytes,
+    'https://freetsa.org/tsr',
+  );
+
+  assert.deepEqual(result.accuracy, {
+    seconds: 1,
+    millis: 250,
+    micros: 0,
+    totalMicros: '1250000',
+  });
+  assert.equal(result.accuracyMs, 1250);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-accuracy')?.ok, true);
+});
+
+test('uses the RFC 3161 accuracy upper bound for archive timeline checks', async () => {
+  const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
+  const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
+  const receiptWithAccuracy = rewriteTstInfo(receiptBytes, (tstInfo) => {
+    tstInfo.accuracy = new Accuracy({ seconds: 2 });
+  });
+  const proof = parseProof(cloneFixture());
+  proof.drand.targetRoundTime = '2026-08-28T05:08:19.000Z';
+  proof.draw.roundTime = proof.drand.targetRoundTime;
+
+  const result = await verifySnapshotArchive(
+    proof,
+    parseSnapshotArchive(proof.archive),
+    commitmentBytes,
+    receiptWithAccuracy,
+  );
+
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-accuracy')?.ok, true);
+  assert.equal(result.checks.find((check) => check.id === 'rfc3161-timeline')?.ok, false);
 });
 
 test('creates a SHA-256 OCSP request and verifies a signed FreeTSA response in the browser path', async () => {

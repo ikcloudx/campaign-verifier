@@ -169,18 +169,26 @@ export async function verifySnapshotArchive(
   const snapshotTime = epochMs(proof.snapshot.publishedAt);
   const targetRoundTime = epochMs(proof.drand.targetRoundTime ?? proof.draw.roundTime);
   const tsaTime = rfc3161.generatedAt?.getTime() ?? Number.NaN;
+  const accuracyCheck = rfc3161.checks.find((item) => item.id === 'rfc3161-accuracy');
+  const accuracyKnown = accuracyCheck?.ok !== false;
+  const tsaLatestPossibleTime = accuracyKnown && Number.isFinite(tsaTime)
+    ? tsaTime + (rfc3161.accuracyMs ?? 0)
+    : Number.NaN;
   const tsaTimelineMatches = Number.isFinite(snapshotTime)
-    && Number.isFinite(tsaTime)
+    && Number.isFinite(tsaLatestPossibleTime)
     && Number.isFinite(targetRoundTime)
     && snapshotTime < tsaTime
-    && tsaTime < targetRoundTime;
+    && tsaLatestPossibleTime < targetRoundTime;
+  const accuracyDetail = rfc3161.accuracy
+    ? `（含 ${rfc3161.accuracy.totalMicros} 微秒 accuracy 上界）`
+    : '';
   checks.push(check(
     'rfc3161-timeline',
     'TSA 时间顺序',
     tsaTimelineMatches,
     tsaTimelineMatches
-      ? `TSA genTime ${rfc3161.generatedAt!.toISOString()} 位于快照发布时间之后、目标 drand round 之前。`
-      : 'TSA genTime 必须位于快照发布时间之后、目标 drand round 之前。',
+      ? `TSA genTime ${rfc3161.generatedAt!.toISOString()}${accuracyDetail} 位于快照发布时间之后、目标 drand round 之前。`
+      : 'TSA genTime 加上 RFC 3161 accuracy 上界必须位于快照发布时间之后、目标 drand round 之前。',
   ));
 
   return { checks, ok: checks.every((item) => item.ok) };
