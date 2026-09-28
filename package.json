@@ -16,7 +16,7 @@
   "dependencies": {
     "asn1js": "3.0.10",
     "drand-client": "1.4.2",
-    "pkijs": "3.4.0"
+    "pkijs": "3.4.1"
   },
   "devDependencies": {
     "@types/node": "^26.3.0",
