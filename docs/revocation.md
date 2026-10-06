@@ -13,7 +13,9 @@ OCSP 返回 `revoked`，或出现签名错误、证书链不可信、CRL 缺失�
 
 ## CRL 更新
 
-`.github/workflows/refresh-freetsa-crl.yml` 每周一 03:00 UTC 下载官方 CRL，验证根证书指纹、CRL 签名和有效期，并仅在内容变化时提交更新。也可以从 Actions 页面手动触发。
+`.github/workflows/refresh-freetsa-crl.yml` 每周一 03:00 UTC 下载官方 CRL，验证根证书指纹、CRL 签名和有效期，并仅在内容变化时创建更新 PR。相同 CRL 的后续运行会复用已有 PR。也可以从 Actions 页面手动触发。合并 PR 后，Pages 工作流会发布更新后的 CRL；创建 PR 本身不会更新线上镜像。
+
+仓库的 `main` 分支要求通过 PR 更新，工作流不会直接推送 `main`。需要在仓库 Settings → Actions → General → Workflow permissions 中启用 **Allow GitHub Actions to create and approve pull requests**，并确保组织策略允许该设置；工作流已声明 `contents: write` 和 `pull-requests: write` 权限。
 
 每周更新意味着吊销信息最多可能滞后约 7 天。高安全场景应缩短刷新周期，或使用受信客户端独立查询最新 CRL/OCSP。
 
