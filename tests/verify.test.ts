@@ -250,7 +250,8 @@ test('parses and verifies an archived protocol v2 proof without trusting reseria
 test('verifies the published RFC 3161 receipt with a pinned TSA root and mirrored CRL', async () => {
   const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
   const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
-  const crlBytes = new Uint8Array(readFileSync(new URL('../public/revocation/freetsa-root-ca.crl', import.meta.url)));
+  // Historical verification needs the CRL valid at the fixed August 2026 test date.
+  const crlBytes = new Uint8Array(readFileSync(new URL('./fixtures/freetsa-root-ca-2026-08.crl', import.meta.url)));
   const result = await verifyRfc3161Receipt(
     receiptBytes,
     commitmentBytes,
@@ -366,7 +367,7 @@ test('rejects an old OCSP response that omits nextUpdate', async () => {
 test('uses a valid OCSP response before consulting the CRL fallback', async () => {
   const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
   const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
-  const crlBytes = new Uint8Array(readFileSync(new URL('../public/revocation/freetsa-root-ca.crl', import.meta.url)));
+  const crlBytes = new Uint8Array(readFileSync(new URL('./fixtures/freetsa-root-ca-2026-08.crl', import.meta.url)));
   const responseBytes = readBase64Fixture('freetsa-ocsp-response.b64');
   const nonce = Uint8Array.from([
     0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
@@ -401,7 +402,7 @@ test('uses a valid OCSP response before consulting the CRL fallback', async () =
 test('falls back to the mirrored CRL when the OCSP proxy response is unavailable', async () => {
   const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
   const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
-  const crlBytes = new Uint8Array(readFileSync(new URL('../public/revocation/freetsa-root-ca.crl', import.meta.url)));
+  const crlBytes = new Uint8Array(readFileSync(new URL('./fixtures/freetsa-root-ca-2026-08.crl', import.meta.url)));
   const result = await verifyRfc3161Receipt(
     receiptBytes,
     commitmentBytes,
@@ -439,7 +440,7 @@ test('fails closed when the browser cannot obtain the mirrored CRL', async () =>
 test('fails closed when the mirrored CRL is stale', async () => {
   const commitmentBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.json', import.meta.url)));
   const receiptBytes = new Uint8Array(readFileSync(new URL('../public/commitments/summer-test10.tsr', import.meta.url)));
-  const crlBytes = new Uint8Array(readFileSync(new URL('../public/revocation/freetsa-root-ca.crl', import.meta.url)));
+  const crlBytes = new Uint8Array(readFileSync(new URL('./fixtures/freetsa-root-ca-2026-08.crl', import.meta.url)));
   const result = await verifyRfc3161Receipt(
     receiptBytes,
     commitmentBytes,
