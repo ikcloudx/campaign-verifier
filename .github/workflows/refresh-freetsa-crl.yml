@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: freetsa-crl
@@ -26,6 +27,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.0.0
+        with:
+          ref: main
 
       - name: Download and verify the signed CRL
         shell: bash
@@ -67,7 +70,10 @@ jobs:
           mkdir -p "$(dirname "$CRL_PATH")"
           cp "$work_dir/crl" "$CRL_PATH"
 
-      - name: Commit a changed CRL
+      - name: Open a pull request for a changed CRL
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
@@ -77,6 +83,21 @@ jobs:
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          crl_sha256="$(sha256sum "$CRL_PATH" | awk '{print $1}')"
+          branch="automation/freetsa-crl-$crl_sha256"
+          git checkout -b "$branch"
           git add -- "$CRL_PATH"
           git commit -m 'chore: refresh FreeTSA CRL'
-          git push origin HEAD:main
+          # Reuse the branch and PR when a scheduled run finds the same CRL.
+          if ! git ls-remote --exit-code --heads origin "$branch"; then
+            git push origin "HEAD:refs/heads/$branch"
+          fi
+          pr_url="$(gh pr list --base main --head "$branch" --state open \
+            --json url --jq '.[0].url // empty')"
+          if test -n "$pr_url"; then
+            echo "FreeTSA CRL update PR already exists: $pr_url"
+          else
+            gh pr create --base main --head "$branch" \
+              --title 'chore: refresh FreeTSA CRL' \
+              --body 'Update the mirrored FreeTSA CRL after verifying the pinned root certificate fingerprint, CRL signature, and validity period. Merge this PR to publish the updated CRL through the Pages workflow.'
+          fi
